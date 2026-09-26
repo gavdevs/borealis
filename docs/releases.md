@@ -10,18 +10,20 @@ approval. The repository and its GitHub releases remain private.
   typechecks, builds, and a Worker dry-run, then Android unit tests and a debug
   build. The two jobs are sequential. Gradle uses one worker and the repository's
   memory caps; no emulator or Android build runs on the development machine.
-- `Deploy companion`: manual from `main` initially. Enable automatic main-branch
-  deployments only by setting repository variable `BOREALIS_AUTO_DEPLOY=true`.
-  Runs tests/build/Worker checks, then Turso migrations, deployment, and read-only
-  HTTPS smoke checks. Uses GitHub environment `production`.
+- `Cloudflare Workers Builds`: the companion's native GitHub connection, not a
+  GitHub Actions deployment. Once connected, `main` pushes run companion tests,
+  build, Worker checks, and deployment on Cloudflare. Preview builds are disabled;
+  Turso migrations remain deliberate/manual. Setup is prepared, but the Worker
+  is not yet live or connected. See [deployment.md](deployment.md).
 - `Draft Android release`: a `vX.Y.Z` tag push, or a manual run naming an existing
   tag. The tag must match `app/lighttool.toml` and refer to a commit on `main`.
   Produces a **draft**, never an automatically published release. Uses GitHub
   environment `android-release`; configure its reviewers before widening access.
 
-External actions are pinned to full commit SHAs verified against upstream release
+External GitHub actions are pinned to full commit SHAs verified against upstream release
 tags. Checkout does not persist repository credentials. Pull requests never receive
-production or signing secrets. GitHub-hosted runners bear the build load.
+production or signing secrets. GitHub-hosted runners handle CI and Android release
+builds; Cloudflare handles companion deployment builds.
 
 ## Signing identity
 
@@ -129,18 +131,25 @@ Using your own signing key produces your own build, not an update signed with th
 maintainer's identity. A fork using another companion domain must explicitly change
 the release URL guard; do not disable all release validation to change one endpoint.
 
-## Cloudflare prerequisites
+## Companion hosting is separate
 
-For the `production` environment, set `CLOUDFLARE_ACCOUNT_ID` as a variable and
-`CLOUDFLARE_API_TOKEN`, `BOREALIS_ADMIN_TOKEN`, `TURSO_DATABASE_URL`, and
-`TURSO_AUTH_TOKEN` as secrets. Use a scoped Cloudflare API token, not a workstation
-OAuth token. The workflow validates all required values before migration, writes
-the three runtime secrets to a mode-0600 runner-temporary JSON file, and supplies it
-to Wrangler's versioned `--secrets-file` deployment. That temporary file is deleted
-even on failure and is never an uploaded artifact. Changing GitHub secrets takes
-effect on the Worker only after a successful deployment.
+Use Cloudflare's dashboard to authorize its GitHub app for the private
+`gavdevs/borealis` repository and connect `borealis-companion`. Its production
+branch is `main`, root directory is `companion`, build command is
+`pnpm test && pnpm build && pnpm worker:check`, and deploy command is
+`pnpm exec wrangler deploy`. Set build variables `NODE_VERSION=22.22.2` and
+`PNPM_VERSION=11.10.0`; disable preview builds. Cloudflare supports these
+[version overrides](https://developers.cloudflare.com/workers/ci-cd/builds/build-image/).
 
-Only backward-compatible migrations belong in the automatic migrate-before-deploy
-step. Back up Turso and design rollback explicitly before destructive schema work.
-Failed smoke checks fail the deployment run but do not roll the Worker or database
-back automatically. See [Cloudflare's GitHub Actions documentation](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/).
+Cloudflare automatically manages the native build token; no separately created
+Cloudflare API token or GitHub deployment secrets are needed. Configure
+`BOREALIS_ADMIN_TOKEN`, `TURSO_DATABASE_URL`, and `TURSO_AUTH_TOKEN` only as Worker
+runtime secrets in **Settings → Variables & Secrets**, not build variables.
+See [Cloudflare's native configuration](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/).
+
+The current Turso schema is migrated. Future migrations must be reviewed and run
+manually before deploying code that needs them, preserving the existing signing
+identity. Read-only and explicit-write production smoke commands remain available
+in [deployment.md](deployment.md); they are not automatically run by the native
+build command. A failed smoke check does not automatically roll back the Worker
+or database. Keep Android signing secrets in GitHub for the Android workflow only.

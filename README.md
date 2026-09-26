@@ -24,7 +24,10 @@ The app consumes a custom SDK fork (by default `../light-sdk`). That fork adds t
   The companion URL defaults to the emulator address `http://10.0.2.2:8787`;
   use `-Pborealis.companionUrl=https://your-companion.example` for a hosted instance.
 - **Hosting:** the production companion is configured for
-  `https://borealis.loosewire.dev` on Cloudflare Workers with Turso. See the
+  `https://borealis.loosewire.dev` on Cloudflare Workers with Turso. Cloudflare's
+  native GitHub integration will build and deploy companion changes from `main`
+  once connected in the dashboard;
+  GitHub Actions handles checks and Android releases. See the
   [deployment runbook](docs/deployment.md) for credentials, migrations, and
   verification; configuration alone is not proof of a live deployment.
 - **Distribution:** [GitHub Actions and signed releases](docs/releases.md) build

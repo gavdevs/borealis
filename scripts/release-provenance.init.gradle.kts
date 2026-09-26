@@ -5,10 +5,15 @@ allprojects {
     if (path == ":app") {
         tasks.register("writeReleaseDependencyProvenance") {
             group = "verification"
+            val releaseRuntimeClasspath = providers.provider {
+                configurations.getByName("releaseRuntimeClasspath")
+            }
+            // Let Gradle schedule included-project artifact producers before hashing.
+            dependsOn(releaseRuntimeClasspath)
             doLast {
                 val output = rootProject.file("release-output/runtime-dependencies.tsv")
                 output.parentFile.mkdirs()
-                val artifacts = configurations.getByName("releaseRuntimeClasspath")
+                val artifacts = releaseRuntimeClasspath.get()
                     .resolvedConfiguration.resolvedArtifacts
                     .sortedBy { "${it.moduleVersion.id}:${it.classifier.orEmpty()}:${it.extension}" }
                 output.bufferedWriter().use { writer ->

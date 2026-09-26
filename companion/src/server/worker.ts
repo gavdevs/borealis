@@ -45,7 +45,11 @@ export async function fetchBorealisWorker(request: Request, env: Env): Promise<R
       playSearch: new GooglePlayWebSearchProvider(config.playLanguage, config.playCountry),
       clientAddress: () => clientAddress,
     })
-    return await app.fetch(request)
+    const response = await app.fetch(request)
+    // Keep malformed and future API routes out of browser/CDN caches too; the
+    // app-level middleware already applies this to the current API namespace.
+    response.headers.set('Cache-Control', 'no-store')
+    return response
   } catch (error) {
     logWorkerError('request_failed', error)
     return serviceUnavailable('Borealis is temporarily unavailable.')

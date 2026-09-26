@@ -99,6 +99,7 @@ describe('Cloudflare Worker adapter', () => {
     expect(response.status).toBe(404)
     expect(response.headers.get('Content-Type')).toContain('application/json')
     expect(await response.json()).toEqual({ error: 'Not found.' })
+    expect(response.headers.get('Cache-Control')).toBe('no-store')
     expect(assetFetch).not.toHaveBeenCalled()
   })
 
@@ -136,7 +137,7 @@ describe('Cloudflare Worker adapter', () => {
       BOREALIS_ADMIN_TOKEN: 'test-admin-token-that-is-long-enough',
       TURSO_DATABASE_URL: 'libsql://borealis.example.turso.io',
       TURSO_AUTH_TOKEN: 'fixture-token',
-    } as unknown as WorkerEnvironment
+    } as WorkerEnvironment
   }
 })
 

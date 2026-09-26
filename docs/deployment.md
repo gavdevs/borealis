@@ -1,8 +1,14 @@
 # Hosted companion
 
 Production origin: **https://borealis.loosewire.dev**. One Cloudflare Worker,
-`borealis-companion`, serves the existing React/Vite assets and Hono API.
+`borealis-companion`, will serve the existing React/Vite assets and Hono API.
 Turso remains the database; this deployment does not introduce D1 or proxy APKs.
+
+Setup status (2026-09-25): the repository is prepared and the current Turso schema
+is migrated, but the Worker is **not yet live or connected to GitHub**. The remaining
+one-time authorization is in Cloudflare's dashboard. The current CLI OAuth session
+received HTTP 403 from the Builds APIs; that does not mean a new user-created API
+token is required for native Workers Builds.
 
 ## Prerequisites
 
@@ -20,7 +26,69 @@ rate limiter, production origin, and static assets. `workers.dev` and version
 preview URLs are disabled. Only `/api` and `/api/*` invoke the Worker; static navigation
 does not open a database connection. API responses must not be cached.
 
-## Validate and deploy
+## Connect Cloudflare to GitHub
+
+The companion uses **Cloudflare Workers Builds**, not a GitHub Actions deployment
+workflow. In Cloudflare's **Workers & Pages**, choose **Create application → Import
+a repository**. Authorize the **Cloudflare Workers & Pages** GitHub app for only
+the private `gavdevs/borealis` repository. If `borealis-companion` already exists,
+connect its repository under **Settings → Builds** instead of creating a second
+Worker. Keep its name identical to `companion/wrangler.jsonc`.
+See [native setup](https://developers.cloudflare.com/workers/ci-cd/builds/) and
+[GitHub access](https://developers.cloudflare.com/workers/ci-cd/builds/git-integration/github-integration/).
+
+Use these settings:
+
+| Setting | Value |
+| --- | --- |
+| Worker name | `borealis-companion` |
+| Repository | `gavdevs/borealis` (private) |
+| Production branch | `main` |
+| Root directory | `companion` |
+| Build command | `pnpm test && pnpm build && pnpm worker:check` |
+| Deploy command | `pnpm exec wrangler deploy` |
+| Build variable `NODE_VERSION` | `22.22.2` |
+| Build variable `PNPM_VERSION` | `11.10.0` |
+| Preview builds | Disabled |
+
+Keep automatic dependency installation enabled; the companion contains the pnpm
+lockfile and package-manager version. Cloudflare supports the two explicit version
+overrides in **Settings → Build → Build Variables and Secrets**.
+See the [build image documentation](https://developers.cloudflare.com/workers/ci-cd/builds/build-image/).
+
+Under **Settings → Build → Branch control**, choose `main` and leave **Enable
+Preview Builds** unchecked. The Wrangler `workers_dev: false` and
+`preview_urls: false` flags do not replace this branch setting. Do not deploy
+nonproduction branches with production Turso credentials; separate preview
+databases and signing identities would need their own deliberate setup.
+See [branch controls](https://developers.cloudflare.com/workers/ci-cd/builds/build-branches/).
+
+Use Cloudflare's automatically generated build token. No manually created
+`CLOUDFLARE_API_TOKEN`, GitHub deployment secret, or local OAuth session is needed
+for this native integration. Cloudflare runs the checked-in Wrangler version from
+`companion/package.json`.
+See [build configuration](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/).
+
+## Configure runtime secrets
+
+In the Worker's **Settings → Variables & Secrets**, add these values as **secrets**:
+
+- `BOREALIS_ADMIN_TOKEN`: preserve the existing private owner-setup token.
+- `TURSO_DATABASE_URL`: the existing Borealis database URL.
+- `TURSO_AUTH_TOKEN`: its database-scoped credential.
+
+These are runtime secrets, **not** GitHub Actions secrets or Cloudflare build
+environment variables. Never paste their values into source control, chat, logs,
+or build commands. Build-only values are not automatically runtime bindings.
+See [build/runtime separation](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/).
+
+The Wrangler configuration declares all three required secrets. If initial import
+attempts a build before they are configured, finish the Worker settings and retry
+the build; do not remove the required-secret check. Inspect any custom-domain
+conflict rather than replacing an existing DNS target automatically. Once connected,
+pushes to `main` run the checks and deployment on Cloudflare's infrastructure.
+
+## Validation and database migrations
 
 From `companion/`, run commands sequentially:
 
@@ -35,19 +103,21 @@ pnpm worker:check
 run. It does **not** prove Cloudflare accepts scrypt's platform-specific cost.
 The production authentication smoke test below is also required.
 
-Authenticate with `pnpm exec wrangler login`. Supply credentials through private
-environment variables, an ignored `.env`, or your secret manager—never shell
-arguments or source control. Run `pnpm worker:migrate` with the matching Turso
-credentials before deploying. This deliberately initializes schema/signing
-identity outside request handling; it reuses an existing signer.
+The current production schema is already migrated. Migrations are **not** part of
+the native build or deploy commands. Before merging code that requires a new schema,
+back up Turso and deliberately run `pnpm worker:migrate` from `companion/` with the
+matching credentials in an ignored `.env`, private environment, or secret manager.
+The migration initializes schema/signing identity outside request handling and
+reuses an existing signer. Never put Turso credentials in build settings just to
+automate this step.
 
-Deploy with `pnpm exec wrangler deploy --secrets-file /absolute/private/secrets.json`
-after building the frontend. The JSON file must contain only the three required
-Worker secrets. Restrict it to mode 0600, never commit it, and remove an ephemeral
-copy after uploading. Inspect any custom-domain conflict rather than replacing
-an existing DNS target automatically.
+Prefer additive, backward-compatible migrations that both old and new Worker
+versions can use. An incompatible change requires a coordinated deployment and
+rollback plan before merging to automatically deployed `main`.
 
 ## Verification and owner setup
+
+After the first successful native deployment, run these from `companion/`:
 
 ```sh
 # Read-only checks: real HTML/assets, health, anonymous session, private API denial.
@@ -70,34 +140,12 @@ creates members, never the curator. Without email, forgotten-password recovery
 is not currently self-service. Existing catalog entries still need reviewed
 publisher pins before automatic approval of their signers.
 
-## Optional GitHub deployment
-
-The chosen initial workflow is a direct Wrangler deployment using local
-Cloudflare login. A separate API token is **not** needed to host this Worker;
-it is only needed if GitHub should deploy future companion updates unattended.
-The following pipeline remains optional and automatic deployment stays disabled.
-
-`.github/workflows/deploy.yml` runs tests, builds, checks the Worker, migrates,
-deploys, then performs read-only HTTPS checks. It is manual initially. Enable
-automatic `main` deployment only after initial live verification by setting
-repository variable `BOREALIS_AUTO_DEPLOY=true`. The workflow is restricted to
-`gavdevs/borealis` and `main`, with serialized deployments.
-
-Configure repository variable `CLOUDFLARE_ACCOUNT_ID` and encrypted Actions
-secrets `CLOUDFLARE_API_TOKEN`, `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, and
-`BOREALIS_ADMIN_TOKEN`. Exporting local secrets to GitHub requires the owner's
-explicit approval. Do not put a temporary Wrangler OAuth session in GitHub.
-Use a scoped Cloudflare deployment API token, limited to the target account
-and `loosewire.dev` zone; consult Cloudflare's current deployment-token guidance.
-Set tokens using `gh secret set NAME --repo gavdevs/borealis` and its hidden
-interactive prompt, or pipe from a private file. Never paste them into chat.
-
 ## Operational boundaries
 
 - Back up Turso independently of code and retain the existing signing-key row.
   Changing that identity breaks the trust established during phone pairing.
 - The initial local database credential expires on **2026-12-25**. Renew the
-  database-scoped credential and update every configured deployment secret before
+  database-scoped credential and update the Worker runtime secret before
   expiry. Do not revoke a still-used credential prematurely.
 - Preserve the owner-setup secret: it also salts rate-limit bucket identifiers.
 - Cloudflare supplies client identity at the trusted Worker boundary. The Node
@@ -116,4 +164,4 @@ interactive prompt, or pipe from a private file. Never paste them into chat.
 References: [Worker static assets](https://developers.cloudflare.com/workers/static-assets/),
 [CPU limits](https://developers.cloudflare.com/workers/platform/limits/),
 [pricing](https://developers.cloudflare.com/workers/platform/pricing/), and
-[GitHub deployment](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/).
+[Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/).
