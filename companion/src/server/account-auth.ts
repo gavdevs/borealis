@@ -1,17 +1,16 @@
-import { randomUUID } from 'node:crypto'
 import type { Context, Hono } from 'hono'
 import { createMiddleware } from 'hono/factory'
-import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
+import { deleteCookie } from 'hono/cookie'
 import { z } from 'zod'
+import { runWithTransaction } from '@better-auth/core/context'
 import type { BorealisConfig } from './config.js'
 import type { BorealisVariables } from './context.js'
 import type { BorealisDatabase } from './db.js'
-import { randomBearer, secureStringEqual, sha256Hex } from './crypto.js'
-import { DUMMY_PASSWORD_HASH, hashPassword, PasswordBusyError, verifyPassword, type PasswordRuntime } from './passwords.js'
+import { secureStringEqual, sha256Hex } from './crypto.js'
+import { PasswordBusyError, type PasswordRuntime } from './passwords.js'
+import { AUTH_BASE_PATH, createAccountAuth, internalAuthEmail } from './better-auth.js'
 
 const API = '/api/borealis/v1'
-const SESSION_SECONDS = 30 * 24 * 60 * 60
-const SESSION_PATTERN = /^brl_session_[A-Za-z0-9_-]{43}$/
 const usernameSchema = z.string().trim().toLowerCase().regex(/^[a-z0-9_]{3,32}$/, 'Use 3–32 letters, numbers, or underscores for your username.')
 const passwordSchema = z.string().max(256).refine((value) => {
   const length = Array.from(value).length
@@ -38,24 +37,59 @@ export function registerAccountAuth(app: Hono<{ Variables: BorealisVariables }>,
   const secure = publicUrl.protocol === 'https:'
   const cookieName = secure ? '__Host-borealis_session' : 'borealis_session'
   const cookieOptions = { httpOnly: true, secure, sameSite: 'Strict' as const, path: '/' }
+  const auth = createAccountAuth(config, database, options.passwordRuntime)
   const allowedOrigins = new Set([publicUrl.origin])
   if (!secure && ['localhost', '127.0.0.1', '[::1]'].includes(publicUrl.hostname)) {
     for (const host of ['localhost', '127.0.0.1']) {
       for (const port of [config.port, 5173]) allowedOrigins.add(`http://${host}:${port}`)
     }
   }
-  function readSession(c: AuthContext): string | null {
-    const raw = getCookie(c, cookieName)
-    return raw && SESSION_PATTERN.test(raw) ? sha256Hex(raw) : null
-  }
   function clearSession(c: AuthContext) { deleteCookie(c, cookieName, cookieOptions) }
-  function issueSession(c: AuthContext, raw: string) {
-    setCookie(c, cookieName, raw, { ...cookieOptions, maxAge: SESSION_SECONDS })
+  function authHeaders(c: AuthContext): Headers {
+    const headers = new Headers(c.req.raw.headers)
+    // Only the runtime-provided peer may populate Better Auth's audit metadata.
+    headers.delete('forwarded')
+    headers.delete('x-real-ip')
+    headers.delete('cf-connecting-ip')
+    headers.set('x-forwarded-for', options.clientAddress?.(c) ?? 'unavailable')
+    return headers
   }
-  function newSession() {
-    const raw = randomBearer('brl_session_')
-    const now = clock()
-    return { raw, digest: sha256Hex(raw), now: now.toISOString(), expiresAt: new Date(now.getTime() + SESSION_SECONDS * 1000).toISOString() }
+  async function callAuth(c: AuthContext, endpoint: string, body: unknown): Promise<Response> {
+    try {
+      return await database.runAuth(() => auth.handler(new Request(`${publicUrl.origin}${AUTH_BASE_PATH}${endpoint}`, {
+        method: 'POST', headers: authHeaders(c), body: JSON.stringify(body),
+      })))
+    } catch {
+      return new Response(null, { status: 503 })
+    }
+  }
+  function unavailable(c: AuthContext) {
+    c.header('Retry-After', '3')
+    return c.json({ error: 'Account service is temporarily unavailable. Please try again.' }, 503)
+  }
+  async function atomicAuth(operation: () => Promise<Response>): Promise<Response> {
+    return database.runAuth(async () => {
+      try {
+        const context = await auth.$context
+        // Better Auth owns the password/session operations. Keep credential
+        // verification and session writes in one transaction so password changes
+        // cannot race a signin using the previous password, or partially commit.
+        // Use the server API: handler() would reset the transaction context.
+        return await runWithTransaction(context.adapter, async () => {
+          const response = await operation()
+          if (!response.ok) throw response
+          return response
+        })
+      } catch (error) {
+        return error instanceof Response ? error : new Response(null, { status: 503 })
+      }
+    })
+  }
+  function copyCookies(c: AuthContext, response: Response) {
+    for (const cookie of response.headers.getSetCookie()) c.header('Set-Cookie', cookie, { append: true })
+  }
+  async function readSession(c: AuthContext) {
+    return database.runAuth(() => auth.api.getSession({ headers: authHeaders(c) }))
   }
 
   async function limit(c: AuthContext, bucket: string, max: number, seconds: number): Promise<boolean> {
@@ -82,14 +116,14 @@ export function registerAccountAuth(app: Hono<{ Variables: BorealisVariables }>,
     await next()
   })
   const accountAuth = createMiddleware<{ Variables: BorealisVariables }>(async (c, next) => {
-    const digest = readSession(c)
-    const session = digest ? await database.getSession(digest, clock().toISOString()) : null
-    if (!session || !digest) {
+    const session = await readSession(c)
+    const account = session ? await database.getAccount(session.user.id) : null
+    if (!session || !account) {
       clearSession(c)
       return c.json({ error: 'Sign in to your Borealis account.' }, 401)
     }
-    c.set('account', session.account)
-    c.set('sessionDigest', digest)
+    c.set('account', account)
+    c.set('sessionDigest', sha256Hex(session.session.token))
     await next()
   })
   const curatorAuth = createMiddleware<{ Variables: BorealisVariables }>(async (c, next) => {
@@ -106,10 +140,10 @@ export function registerAccountAuth(app: Hono<{ Variables: BorealisVariables }>,
     }
   })
   app.get(`${API}/auth/session`, async (c) => {
-    const digest = readSession(c)
-    const session = digest ? await database.getSession(digest, clock().toISOString()) : null
-    if (digest && !session) clearSession(c)
-    return c.json({ account: session?.account ?? null, bootstrapAvailable: await database.isBootstrapAvailable() })
+    const session = await readSession(c)
+    const account = session ? await database.getAccount(session.user.id) : null
+    if (!account && c.req.header('Cookie')) clearSession(c)
+    return c.json({ account, bootstrapAvailable: await database.isBootstrapAvailable() })
   })
 
   for (const bootstrap of [false, true]) {
@@ -125,16 +159,26 @@ export function registerAccountAuth(app: Hono<{ Variables: BorealisVariables }>,
         }
         if (!await database.isBootstrapAvailable()) return c.json({ error: 'Server owner setup is already complete.' }, 409)
       }
-      const passwordHash = await hashPassword(parsed.data.password, options.passwordRuntime)
-      const session = newSession()
-      const account = await database.createAccount({
-        id: randomUUID(), username: parsed.data.username, passwordHash,
-        createdAt: session.now, sessionDigest: session.digest, sessionExpiresAt: session.expiresAt, bootstrap,
+      const response = await callAuth(c, '/sign-up/email', {
+        email: internalAuthEmail(parsed.data.username), name: parsed.data.username,
+        username: parsed.data.username, password: parsed.data.password,
       })
+      if (!response.ok) {
+        if (response.status >= 500) return unavailable(c)
+        const error = await response.json() as { code?: string }
+        if (['USER_ALREADY_EXISTS', 'USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL', 'USERNAME_IS_ALREADY_TAKEN'].includes(error.code ?? '')) {
+          return c.json({ error: 'That username is unavailable, or server setup is already complete.' }, 409)
+        }
+        return c.json({ error: 'Unable to create your account. Please try again.' }, 400)
+      }
+      const result = await response.json() as { user: { id: string } }
+      let account = await database.ensureBetterAuthAccount({
+        id: result.user.id, username: parsed.data.username, createdAt: clock().toISOString(),
+      })
+      if (account && bootstrap) account = await database.claimBetterAuthOwner(account.id, clock().toISOString())
       if (!account) return c.json({ error: 'That username is unavailable, or server setup is already complete.' }, 409)
-      const previous = readSession(c)
-      if (previous) await database.deleteSession(previous)
-      issueSession(c, session.raw)
+      await database.runAuth(() => auth.api.signOut({ headers: authHeaders(c) }))
+      copyCookies(c, response)
       return c.json({ account }, 201)
     })
   }
@@ -148,22 +192,30 @@ export function registerAccountAuth(app: Hono<{ Variables: BorealisVariables }>,
       c.header('Retry-After', '900')
       return c.json({ error: 'Too many sign-in attempts. Try again later.' }, 429)
     }
-    const credentials = await database.findAccountCredentials(parsed.data.username)
-    const valid = await verifyPassword(parsed.data.password, credentials?.passwordHash ?? DUMMY_PASSWORD_HASH, options.passwordRuntime)
-    if (!valid || !credentials) return c.json({ error: 'Username or password is incorrect.' }, 401)
-    const session = newSession()
-    const account = await database.createAccountSession(credentials.account.id, credentials.passwordHash, session.digest, session.expiresAt, session.now)
+    // Use the internal alias with the core API: the username plugin's lookup
+    // bypasses Better Auth's transaction adapter in 1.7.6. The public API still
+    // accepts only a validated username, never an email or user-provided alias.
+    const response = await atomicAuth(() => auth.api.signInEmail({
+      headers: authHeaders(c),
+      body: { email: internalAuthEmail(parsed.data.username), password: parsed.data.password },
+      asResponse: true,
+    }))
+    if (response.status >= 500) return unavailable(c)
+    if (!response.ok) return c.json({ error: 'Username or password is incorrect.' }, 401)
+    const result = await response.json() as { user: { id: string } }
+    const account = await database.ensureBetterAuthAccount({
+      id: result.user.id, username: parsed.data.username, createdAt: clock().toISOString(),
+    })
     if (!account) return c.json({ error: 'Username or password is incorrect.' }, 401)
-    const previous = readSession(c)
-    if (previous) await database.deleteSession(previous)
-    issueSession(c, session.raw)
+    await database.runAuth(() => auth.api.signOut({ headers: authHeaders(c) }))
+    copyCookies(c, response)
     return c.json({ account })
   })
 
   app.post(`${API}/auth/signout`, async (c) => {
-    const digest = readSession(c)
-    if (digest) await database.deleteSession(digest)
-    clearSession(c)
+    const response = await callAuth(c, '/sign-out', {})
+    if (!response.ok) return unavailable(c)
+    copyCookies(c, response)
     return c.json({ ok: true })
   })
 
@@ -171,16 +223,15 @@ export function registerAccountAuth(app: Hono<{ Variables: BorealisVariables }>,
     if (!await limit(c, 'change-password', 10, 900)) return c.json({ error: 'Too many attempts. Try again later.' }, 429)
     const parsed = changeSchema.safeParse(await c.req.json().catch(() => null))
     if (!parsed.success) return c.json({ error: parsed.error.issues[0]?.message ?? 'Check your password.' }, 400)
-    const credentials = await database.getAccountCredentials(c.get('account').id)
-    if (!credentials || !await verifyPassword(parsed.data.currentPassword, credentials.passwordHash, options.passwordRuntime)) {
+    const response = await atomicAuth(() => auth.api.changePassword({
+      headers: authHeaders(c), body: { ...parsed.data, revokeOtherSessions: true }, asResponse: true,
+    }))
+    if (response.status >= 500) return unavailable(c)
+    if (!response.ok) {
       return c.json({ error: 'Current password is incorrect.' }, 400)
     }
-    const passwordHash = await hashPassword(parsed.data.newPassword, options.passwordRuntime)
-    const session = newSession()
-    const account = await database.changeAccountPassword(credentials.account.id, credentials.passwordHash, passwordHash, session.digest, session.expiresAt, session.now)
-    if (!account) return c.json({ error: 'Your password changed. Sign in again.' }, 401)
-    issueSession(c, session.raw)
-    return c.json({ account })
+    copyCookies(c, response)
+    return c.json({ account: c.get('account') })
   })
   return { accountAuth, curatorAuth, browserMutationGuard, limit }
 }

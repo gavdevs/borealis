@@ -18,18 +18,21 @@ The app consumes a custom SDK fork (by default `../light-sdk`). That fork adds t
 - **Web companion:** see [companion/README.md](companion/README.md) for Node.js,
   pnpm, configuration, and local startup. Copy the example environment file and
   supply a private owner-setup token. Users sign up with a username and password,
-  without email. Keep the database and signing material private.
+  without email. Better Auth 1.7.6 manages password authentication and sessions;
+  its internal `username@users.borealis.invalid` aliases are never emailed.
+  Keep the database and signing material private.
 - **Phone app:** requires JDK 17, Android SDK 36, and the pinned, patched Light SDK.
   Configure your Android SDK path locally, then use the included Gradle wrapper.
   The companion URL defaults to the emulator address `http://10.0.2.2:8787`;
   use `-Pborealis.companionUrl=https://your-companion.example` for a hosted instance.
-- **Hosting:** the production companion is configured for
-  `https://borealis.loosewire.dev` on Cloudflare Workers with Turso. Cloudflare's
+- **Hosting:** the production companion is live at
+  `https://borealis.loosewire.dev` on Cloudflare Workers Free with Turso, without
+  an explicit CPU override. Cloudflare's
   native GitHub integration will build and deploy companion changes from `main`
   once connected in the dashboard;
   GitHub Actions handles checks and Android releases. See the
   [deployment runbook](docs/deployment.md) for credentials, migrations, and
-  verification; configuration alone is not proof of a live deployment.
+  verification and the separate native GitHub connection step.
 - **Distribution:** [GitHub Actions and signed releases](docs/releases.md) build
   against the pinned, patched SDK on hosted runners. Release builds require the
   dedicated Borealis signing key and production HTTPS URL. Releases start as
@@ -54,6 +57,15 @@ update jobs and the intended category-admission policy are not complete; the
 current allowlist is manually curated. The companion supports username/password
 accounts, private app collections, and account-owned phones. Catalog approval
 and publisher pins are restricted to curators; public signup never grants that role.
+
+The Better Auth migration was applied to production on 2026-09-26 after a private
+backup. Existing account IDs, roles, password hashes, phone ownership, and exact
+signing-key bytes were verified unchanged. Browsers must sign in again; Better Auth
+uses opaque session tokens and signed cookies. Wrangler deployment to Workers Free
+and hosted HTTPS account, pairing, and signed-job checks passed; temporary fixtures
+were cleaned. Legacy-password production signin, native GitHub build connection,
+and physical LP3 installation remain unverified. See the
+[deployment runbook](docs/deployment.md) for session-secret handling and remaining checks.
 
 The planned product is a shared hosted service where each person logs in and
 pairs their own phones. Turso is the chosen hosted SQLite provider (replacing

@@ -16,11 +16,37 @@ The companion never receives Google credentials and never proxies or stores APK 
 
 ## Shared accounts
 
-People sign up and sign in using a username and password, without email.
-Passwords are salted scrypt hashes; opaque browser sessions are stored as
-digests and expire after 30 days. Profile password changes require the current
-password and invalidate old browser sessions. No forgotten-password recovery
-flow is implemented.
+People sign up and sign in using a username and password, without supplying an
+email. Better Auth 1.7.6 owns password hashing/verification and browser sessions;
+Borealis retains its account-scoped authorization, curated catalog, and durable
+request limits. The library's required email-shaped identifier is the internal,
+non-deliverable alias `username@users.borealis.invalid`. No email is sent, and
+email-based login, recovery, and account linking are not exposed.
+
+New passwords use Better Auth's maintained scrypt implementation. The additive
+migration copies existing verifiers unchanged into `ba_account`; a compatibility
+callback verifies their original parameters and password encoding. Better Auth
+user IDs match existing Borealis account IDs, preserving roles, phone/app ownership,
+and the persisted signing key. New domain account rows hold `better-auth-managed`
+instead of a password hash; their credentials belong to Better Auth.
+
+Opaque browser session tokens are stored in `ba_session`, not as digests, and
+are carried in signed HttpOnly/SameSite=Strict cookies (Secure on HTTPS). Sessions
+expire after 30 days. Legacy session digests are not migrated, so existing browsers
+must sign in again. Profile password changes require the current password and
+invalidate old browser sessions. No forgotten-password recovery flow is implemented.
+
+Better Auth's signing secret is a domain-separated HMAC derived from the stable
+`BOREALIS_ADMIN_TOKEN`; no new environment secret is required. Rotating that token
+invalidates browser cookies but leaves password hashes, phone credentials, and
+the job-signing identity intact. Back up the database and private configuration.
+
+The production migration was applied on 2026-09-26 after a private backup;
+domain records and signing-key bytes were verified unchanged. Wrangler deployment
+to Workers Free and the hosted HTTPS account/pairing/signed-job checks passed,
+without a CPU override or billing change. Legacy-password signin is locally tested
+but not production-verified; physical phone installation remains unverified.
+See the [deployment runbook](deployment.md) for the remaining checks.
 
 The shared catalog is curator-managed. Each member's chosen apps, phones,
 assignments, and job history are scoped to that account. Phone pairing is

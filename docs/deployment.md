@@ -1,21 +1,26 @@
 # Hosted companion
 
 Production origin: **https://borealis.loosewire.dev**. One Cloudflare Worker,
-`borealis-companion`, will serve the existing React/Vite assets and Hono API.
+`borealis-companion`, serves the existing React/Vite assets and Hono API.
 Turso remains the database; this deployment does not introduce D1 or proxy APKs.
 
-Setup status (2026-09-25): the repository is prepared and the current Turso schema
-is migrated, but the Worker is **not yet live or connected to GitHub**. The remaining
-one-time authorization is in Cloudflare's dashboard. The current CLI OAuth session
-received HTTP 403 from the Builds APIs; that does not mean a new user-created API
-token is required for native Workers Builds.
+Setup status (2026-09-26): the Better Auth 1.7.6 migration has been applied to
+production after creating a private database backup. Comparison against that
+backup verified unchanged domain records, legacy sessions, bootstrap metadata,
+and exact public/private signing-key bytes. Wrangler deployment to Workers Free
+and real HTTPS verification **passed**; no billing change or CPU override was used.
+Hosted checks covered signup/signin, password changes and session revocation,
+secure cookies, CSRF, account isolation, pairing, the original signing identity,
+signed install jobs, and signout. Temporary fixtures were removed.
+
+Legacy-password signin has been tested locally, not against production. Physical
+LP3 installation/update and the native GitHub build connection remain unverified.
 
 ## Prerequisites
 
 - A Cloudflare account managing the active `loosewire.dev` zone.
-- Workers Paid CPU capacity: the existing strong scrypt password hashing is not
-  suitable for the free plan's 10 ms CPU budget. Do not weaken hashing to fit it.
-  The Worker sets a 2-second CPU ceiling per request.
+- Workers **Free** is the target, with its 10 ms CPU budget and no explicit CPU
+  override. Paid billing and weaker password hashing are not part of this setup.
 - The three private Worker secrets: `BOREALIS_ADMIN_TOKEN`, `TURSO_DATABASE_URL`,
   and `TURSO_AUTH_TOKEN`. Preserve the existing database and its signing identity.
 - A database backup before migrations. Current migrations are additive; rolling
@@ -73,7 +78,9 @@ See [build configuration](https://developers.cloudflare.com/workers/ci-cd/builds
 
 In the Worker's **Settings → Variables & Secrets**, add these values as **secrets**:
 
-- `BOREALIS_ADMIN_TOKEN`: preserve the existing private owner-setup token.
+- `BOREALIS_ADMIN_TOKEN`: preserve the existing private owner-setup token. A
+  domain-separated HMAC of it supplies Better Auth's cookie-signing secret;
+  there is no additional auth secret to configure.
 - `TURSO_DATABASE_URL`: the existing Borealis database URL.
 - `TURSO_AUTH_TOKEN`: its database-scoped credential.
 
@@ -81,6 +88,11 @@ These are runtime secrets, **not** GitHub Actions secrets or Cloudflare build
 environment variables. Never paste their values into source control, chat, logs,
 or build commands. Build-only values are not automatically runtime bindings.
 See [build/runtime separation](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/).
+
+Keep `BOREALIS_ADMIN_TOKEN` stable. Rotating it invalidates existing browser
+cookies and changes rate-limit bucket keys, but does not rewrite password hashes,
+account ownership, phone credentials, or the job-signing key. Users must sign in
+again after rotation.
 
 The Wrangler configuration declares all three required secrets. If initial import
 attempts a build before they are configured, finish the Worker settings and retry
@@ -100,24 +112,45 @@ pnpm worker:check
 ```
 
 `worker:check` checks generated types, typechecks the Worker, and bundles a dry
-run. It does **not** prove Cloudflare accepts scrypt's platform-specific cost.
-The production authentication smoke test below is also required.
+run. The hosted authentication smoke test passed on 2026-09-26. A controlled
+existing-account production signin remains to be checked; continue monitoring
+Worker CPU and errors after changes.
 
-The current production schema is already migrated. Migrations are **not** part of
-the native build or deploy commands. Before merging code that requires a new schema,
+The Better Auth migration was applied on **2026-09-26** with a retained private
+backup and preservation checks. Migrations are **not** part of the native build
+or deploy commands. Before merging code that requires a new schema,
 back up Turso and deliberately run `pnpm worker:migrate` from `companion/` with the
 matching credentials in an ignored `.env`, private environment, or secret manager.
 The migration initializes schema/signing identity outside request handling and
 reuses an existing signer. Never put Turso credentials in build settings just to
 automate this step.
 
+The additive migration creates `ba_user`, `ba_account`, `ba_session`, and
+`ba_verification`. Existing Borealis account IDs, usernames, roles, app/phone
+ownership, password hashes, and the signing identity are preserved. Legacy hashes
+are copied unchanged into Better Auth credential records; a compatibility verifier
+reads them until a password change uses Better Auth's maintained hashing format.
+Migration markers prevent later runs from restoring removed auth records.
+
+Better Auth requires an email-shaped identifier internally. Borealis supplies
+`username@users.borealis.invalid`, a non-deliverable alias: users provide no email,
+and no email is sent. Email login, recovery, and account linking are not exposed.
+Old browser session digests are not converted; everyone must sign in again.
+New opaque session tokens live in `ba_session` and are carried in signed,
+HttpOnly/SameSite=Strict cookies (Secure on HTTPS), not stored as token digests.
+Protect database backups accordingly.
+
 Prefer additive, backward-compatible migrations that both old and new Worker
 versions can use. An incompatible change requires a coordinated deployment and
 rollback plan before merging to automatically deployed `main`.
+In particular, retained legacy password rows do not track later Better Auth
+password changes, and new domain rows contain only `better-auth-managed` instead
+of a password hash. Do not treat switching back to the old auth code as a safe
+password/session rollback; coordinate recovery before doing so.
 
 ## Verification and owner setup
 
-After the first successful native deployment, run these from `companion/`:
+After deployment or a relevant authentication change, run these from `companion/`:
 
 ```sh
 # Read-only checks: real HTML/assets, health, anonymous session, private API denial.
@@ -130,9 +163,12 @@ node --env-file=.env scripts/hosted-smoke.mjs --allow-test-writes
 The second command creates two random member accounts and a synthetic phone,
 then checks secure cookies, CSRF rejection, isolation, pairing, signed jobs,
 password changes, and session revocation through the real HTTPS endpoint.
-Its `finally` cleanup targets only its random fixture usernames and bearer
-digest. It never claims owner setup or edits the shared catalog. A cleanup
-failure is reported separately. It is not an Android installation test.
+Its `finally` cleanup resolves only its random fixture usernames and bearer
+digest, then explicitly removes their Better Auth users, sessions, credentials,
+and domain child rows without relying on foreign-key cascades. It never claims
+owner setup or edits the shared catalog. A cleanup failure is reported separately.
+This verifies newly created accounts, not legacy-password compatibility or Android
+installation; verify those paths separately.
 
 On the production sign-in screen, use **Set up this server** once with the
 existing private setup token and your chosen username/password. Public signup
@@ -147,7 +183,8 @@ publisher pins before automatic approval of their signers.
 - The initial local database credential expires on **2026-12-25**. Renew the
   database-scoped credential and update the Worker runtime secret before
   expiry. Do not revoke a still-used credential prematurely.
-- Preserve the owner-setup secret: it also salts rate-limit bucket identifiers.
+- Preserve the owner-setup secret: it also derives Better Auth's signing secret
+  and salts rate-limit bucket identifiers. Do not store it in the browser.
 - Cloudflare supplies client identity at the trusted Worker boundary. The Node
   preview uses socket peers; arbitrary forwarded headers are not trusted there.
 - Edge rate limiting happens before database access; persistent account/IP

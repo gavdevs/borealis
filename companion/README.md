@@ -81,40 +81,57 @@ stored.
 - **Create account:** choose a username (3–32 letters, digits, or underscores,
   case-insensitive) and a 15–128-character password/passphrase. No email,
   confirmation email, recovery code, or third-party identity service is required.
-- **Sign in:** use that username and password. Passwords are salted scrypt
-  hashes (`N=32768, r=8, p=3`), never plaintext or a fast SHA-256 password hash.
-  Spaces and Unicode are accepted; passwords are not trimmed or truncated.
+- **Sign in:** use that username and password. Better Auth 1.7.6 owns password
+  hashing, verification, and browser sessions. New passwords use its maintained
+  scrypt implementation; spaces and Unicode are accepted.
 - **Profile:** shows the username, password change, and sign out. Changing a
-  password requires the current password, revokes all old sessions, and replaces
-  the session in the current browser. This does not revoke paired phones.
+  password requires the current password. Updating the verifier, revoking old
+  sessions, and creating the replacement session are one database transaction;
+  a failure rolls them back together. This does not revoke paired phones.
 - **Recovery:** there is no self-service forgotten-password reset. Save the
   password in a password manager; having a session alone does not bypass the
   current-password requirement. Recovery needs a separately designed mechanism.
 - **Server owner:** use the one-time owner setup on the sign-in screen with the
-  existing `BOREALIS_ADMIN_TOKEN`, plus a new username/password. This atomically
-  creates the curator and claims legacy unowned phones and existing app selections.
+  existing `BOREALIS_ADMIN_TOKEN`, plus a new username/password. Better Auth
+  identity and domain member creation happen first; the subsequent owner claim
+  atomically promotes that account to curator and claims legacy unowned phones
+  and existing app selections.
   Ordinary signup never claims legacy data, even if it is the first account.
   After setup, the token cannot be used as an API bearer or to create another
   curator. Do not delete the `bootstrap_claimed` metadata record.
 
-Sessions are random 256-bit credentials; only their SHA-256 digests are stored
-in the database. Cookies are `HttpOnly; SameSite=Strict; Path=/`, with `Secure`
-and a `__Host-` prefix on HTTPS. HTTP is permitted only for loopback development.
+Better Auth's required email-shaped field uses the internal, non-deliverable
+alias `username@users.borealis.invalid`. The UI never asks for an email, no email
+is sent, and email-based login, recovery, and account linking are not exposed.
+Existing scrypt verifiers (`N=32768, r=8, p=3`) are copied unchanged and verified
+with their original encoding until a password change. Account IDs, roles, phone
+ownership, and signing keys are preserved; legacy browser sessions are not
+migrated, so existing users must sign in again.
+
+Better Auth stores opaque session tokens in `ba_session`, not SHA-256 digests,
+and signs the browser cookies. Cookies are `HttpOnly; SameSite=Strict; Path=/`,
+with `Secure` and a `__Host-` prefix on HTTPS. HTTP is permitted only for loopback development.
 Mutating browser requests require the `X-Borealis-Request: 1` header and an
 allowed Origin when supplied; POST/PUT bodies must be JSON. There is no CORS
 allowlist that permits arbitrary sites to send authenticated requests.
+
+The cookie-signing secret is a domain-separated HMAC derived from the stable
+`BOREALIS_ADMIN_TOKEN`; no additional secret is needed. Rotating that token
+invalidates browser cookies and changes rate-limit bucket keys, but leaves
+password hashes, account ownership, phone credentials, and signing keys intact.
+Keep the database backups and owner-setup token private.
 
 Signup, login, setup, password changes, and pairing-code attempts have persistent
 database-backed limits; login is also limited by normalized username. The Node
 adapter uses the actual socket peer, not caller-supplied forwarding headers.
 The Cloudflare adapter uses the platform's `CF-Connecting-IP` and an edge limiter
-before database access. Node password hashing runs one job at a time with a
-bounded queue to limit memory pressure on this development machine. Workers use
-the same scrypt parameters synchronously without cross-request promise state.
+before database access. Better Auth handles new password hashing; the legacy
+verifier remains only for compatibility with pre-migration accounts.
 
-The implementation follows [OWASP password-storage guidance](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html)
-and [session guidance](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html);
-this does not imply a completed production security audit.
+See [Better Auth security](https://better-auth.com/docs/reference/security),
+[OWASP password-storage guidance](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html),
+and [session guidance](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html).
+A production security audit has not been completed.
 
 ## Turso database
 

@@ -1,5 +1,7 @@
 packages:
   - .
+overrides:
+  '@libsql/kysely-libsql>@libsql/client': 0.18.0
 allowBuilds:
   esbuild: true
   workerd: true

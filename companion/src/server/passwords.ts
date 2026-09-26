@@ -1,7 +1,8 @@
 import { randomBytes, scrypt, scryptSync, timingSafeEqual } from 'node:crypto'
 
-// OWASP's 32 MiB scrypt configuration. Keep one KDF active at a time on the
-// low-memory Node host, with a bounded queue instead of unbounded allocation.
+// Legacy verifier compatibility only. Better Auth owns new passwords and
+// sessions; retain the original bytes/parameters so existing users can log in.
+// Keep legacy Node KDF work bounded on the low-memory development host.
 const PARAMETERS = { N: 32_768, r: 8, p: 3, maxmem: 64 * 1024 * 1024 }
 const PREFIX = 'scrypt$32768$8$3'
 export const DUMMY_PASSWORD_HASH = `${PREFIX}$${'0'.repeat(32)}$${'0'.repeat(128)}`
@@ -14,8 +15,7 @@ export class PasswordBusyError extends Error {}
 async function derive(password: string, salt: Buffer, runtime: PasswordRuntime): Promise<Buffer> {
   // Workerd's callback scrypt also performs its CPU work synchronously. Use the
   // explicit sync API there, retaining the exact hash parameters without a
-  // shared queue of promises tied to other requests' lifetimes. This requires a
-  // Workers Paid CPU budget; the Free plan's 10 ms is not suitable for this KDF.
+  // shared queue of promises tied to other requests' lifetimes.
   // https://github.com/cloudflare/workerd/blob/main/src/node/internal/crypto_scrypt.ts
   if (runtime === 'worker') return scryptSync(password, salt, 64, PARAMETERS)
 

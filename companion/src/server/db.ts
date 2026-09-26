@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { Client, InValue, Transaction, TransactionMode } from '@libsql/client'
 import type { AccountSummary, AllowlistItem, DeviceSummary, JobSummary, PairingSummary } from '../shared/api.js'
+import { migrateBetterAuth } from './better-auth-migration.js'
 import { generateSigningKey, type PersistedSigningKey } from './crypto.js'
 
 type PairingRow = {
@@ -89,6 +90,13 @@ export class BorealisDatabase {
 
   close(): void {
     this.client.close()
+  }
+
+  // Better Auth shares the local SQLite connection with domain operations.
+  // Serialize its transactions through the same gate; remote requests retain
+  // their independent libSQL streams and do not share request-bound promises.
+  runAuth<T>(operation: () => Promise<T>): Promise<T> {
+    return this.run(operation)
   }
 
   async migrate(): Promise<void> {
@@ -212,11 +220,61 @@ export class BorealisDatabase {
       }
       await tx.execute('CREATE INDEX IF NOT EXISTS devices_owner_idx ON devices(owner_account_id, created_at)')
     })
+    await this.transaction(migrateBetterAuth)
   }
 
   async isBootstrapAvailable(): Promise<boolean> {
     return this.run(async () => !(await first(this.client,
       "SELECT key FROM service_metadata WHERE key = 'bootstrap_claimed'")))
+  }
+
+  async getAccount(accountId: string): Promise<AccountSummary | null> {
+    return this.run(async () => {
+      const row = await first<AccountRow>(this.client, 'SELECT * FROM accounts WHERE id = ?', [accountId])
+      return row ? mapAccount(row) : null
+    })
+  }
+
+  // Call only with an authenticated Better Auth user or its trusted create hook.
+  // The domain row owns phones/apps; Better Auth owns all new password records.
+  async ensureBetterAuthAccount(input: {
+    id: string
+    username: string
+    createdAt: string
+  }): Promise<AccountSummary | null> {
+    const username = input.username.trim().toLowerCase()
+    if (!/^[a-z0-9_]{3,32}$/.test(username) || !Number.isFinite(Date.parse(input.createdAt))) return null
+    return this.transaction(async (tx) => {
+      await tx.execute({
+        sql: `INSERT OR IGNORE INTO accounts (id, username, password_hash, role, created_at)
+          VALUES (?, ?, 'better-auth-managed', 'member', ?)`,
+        args: [input.id, username, input.createdAt],
+      })
+      const row = await first<AccountRow>(tx, 'SELECT * FROM accounts WHERE id = ? AND username = ?', [input.id, username])
+      return row ? mapAccount(row) : null
+    })
+  }
+
+  async claimBetterAuthOwner(accountId: string, now: string): Promise<AccountSummary | null> {
+    return this.transaction(async (tx) => {
+      if (await first(tx, "SELECT key FROM service_metadata WHERE key = 'bootstrap_claimed'")) return null
+      const row = await first<AccountRow>(tx, 'SELECT * FROM accounts WHERE id = ?', [accountId])
+      if (!row) return null
+      await tx.execute({ sql: "UPDATE accounts SET role = 'curator' WHERE id = ?", args: [accountId] })
+      await tx.execute({
+        sql: "INSERT INTO service_metadata (key, value) VALUES ('bootstrap_claimed', ?)",
+        args: [accountId],
+      })
+      await tx.execute({
+        sql: 'UPDATE devices SET owner_account_id = ? WHERE owner_account_id IS NULL',
+        args: [accountId],
+      })
+      await tx.execute({
+        sql: 'INSERT OR IGNORE INTO account_apps (account_id, package_name, created_at) SELECT ?, package_name, ? FROM allowlist',
+        args: [accountId, now],
+      })
+      return { ...mapAccount(row), role: 'curator' }
+    })
   }
 
   async createAccount(input: {
