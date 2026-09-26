@@ -2,7 +2,11 @@ import java.security.MessageDigest
 import org.gradle.api.artifacts.component.ModuleComponentIdentifier
 import org.gradle.api.artifacts.component.ProjectComponentIdentifier
 import org.gradle.api.artifacts.result.ResolvedArtifactResult
+import org.gradle.api.artifacts.result.UnresolvedDependencyResult
 import org.gradle.api.artifacts.type.ArtifactTypeDefinition
+
+data class ProvenanceArtifact(val coordinate: String, val file: File)
+data class SdkArchive(val component: ProjectComponentIdentifier, val file: File)
 
 fun projectArtifactType(component: ProjectComponentIdentifier): String =
     when (component.projectPath) {
@@ -29,6 +33,30 @@ allprojects {
                 val runtimeClasspath = providers.provider {
                     configurations.getByName("${variant}RuntimeClasspath")
                 }
+                val sdkBuild = gradle.includedBuild("light-sdk")
+                val selectedSdkProjects = runtimeClasspath.map { configuration ->
+                    val expectedSdkDirectory = rootProject.file(
+                        providers.gradleProperty("borealis.sdkPath").getOrElse("../light-sdk"),
+                    ).canonicalFile
+                    check(sdkBuild.projectDir.canonicalFile == expectedSdkDirectory) {
+                        "Included Light SDK directory does not match borealis.sdkPath"
+                    }
+                    val resolution = configuration.incoming.resolutionResult
+                    resolution.allDependencies.filterIsInstance<UnresolvedDependencyResult>()
+                        .firstOrNull()?.let {
+                            throw GradleException("Unresolved runtime dependency ${it.attempted.displayName}", it.failure)
+                        }
+                    val rootId = resolution.rootComponent.get().id
+                    resolution.allComponents.map { it.id }
+                        .filterIsInstance<ProjectComponentIdentifier>()
+                        .filter { it != rootId }
+                        .onEach { component ->
+                            check(component.build.buildPath == ":${sdkBuild.name}") {
+                                "Unexpected runtime build ${component.build.buildPath}"
+                            }
+                            projectArtifactType(component) // Reject unrecognized project paths.
+                        }
+                }
                 // Leave external dependencies' artifact types untouched: hash the
                 // original selected AAR/JAR files, not AGP's transformed classes.
                 val externalArtifacts = runtimeClasspath.map { configuration ->
@@ -36,22 +64,39 @@ allprojects {
                         componentFilter { it !is ProjectComponentIdentifier }
                     }.artifacts
                 }
-                // Android projects expose many artifact sets. Select their AAR
-                // explicitly; the SDK shared module is JVM and instead needs JAR.
-                val projectArtifacts = listOf("aar", ArtifactTypeDefinition.JAR_TYPE).map { type ->
-                    runtimeClasspath.map { configuration ->
-                        configuration.incoming.artifactView {
-                            componentFilter {
-                                it is ProjectComponentIdentifier && projectArtifactType(it) == type
-                            }
-                            attributes.attribute(ArtifactTypeDefinition.ARTIFACT_TYPE_ATTRIBUTE, type)
-                        }.artifacts
+                // The shared module is JVM: select its actual JAR instead of its
+                // classes directory. Keep artifact resolution strict.
+                val sharedArtifacts = runtimeClasspath.map { configuration ->
+                    configuration.incoming.artifactView {
+                        componentFilter {
+                            it is ProjectComponentIdentifier &&
+                                projectArtifactType(it) == ArtifactTypeDefinition.JAR_TYPE
+                        }
+                        attributes.attribute(ArtifactTypeDefinition.ARTIFACT_TYPE_ATTRIBUTE, ArtifactTypeDefinition.JAR_TYPE)
+                    }.artifacts
+                }
+                // AGP 8.12.3 does not expose normal AARs on local runtimeElements.
+                // Select Android projects from the dependency graph, then build
+                // their normal bundles explicitly (not the different lint AARs).
+                val sdkArchives = selectedSdkProjects.map { components ->
+                    components.filter { projectArtifactType(it) == "aar" }.map { component ->
+                        val module = component.projectPath.substringAfterLast(':')
+                        val archive = File(sdkBuild.projectDir, "sdk/$module/build/outputs/aar/$module-$variant.aar")
+                        check(archive.canonicalFile.toPath().startsWith(sdkBuild.projectDir.canonicalFile.toPath())) {
+                            "SDK archive escapes the included build directory"
+                        }
+                        SdkArchive(component, archive)
                     }
                 }
-                val artifactCollections = listOf(externalArtifacts) + projectArtifacts
+                dependsOn(sdkArchives.map { archives ->
+                    archives.map { sdkBuild.task("${it.component.projectPath}:bundle${taskVariant}Aar") }
+                })
+                inputs.files(sdkArchives.map { archives -> archives.map { it.file } })
+                    .withPropertyName("sdkArchives")
+                val artifactCollections = listOf(externalArtifacts, sharedArtifacts)
                 artifactCollections.forEachIndexed { index, artifacts ->
                     val files = artifacts.map { it.artifactFiles }
-                    // FileCollections retain the selected AAR/JAR producer tasks.
+                    // FileCollections retain the selected JAR producer tasks.
                     // Never depend on the unqualified runtime configuration itself.
                     inputs.files(files).withPropertyName("runtimeArtifacts$index")
                     dependsOn(files)
@@ -63,12 +108,14 @@ allprojects {
                         layout.buildDirectory.file("reports/dependency-provenance/debug.tsv").get().asFile
                     }
                     output.parentFile.mkdirs()
-                    val artifacts = artifactCollections.flatMap { it.get().artifacts }
-                        .sortedWith(compareBy({ coordinate(it) }, { it.file.name }))
+                    val artifacts = (artifactCollections.flatMap { it.get().artifacts }
+                        .map { ProvenanceArtifact(coordinate(it), it.file) } +
+                        sdkArchives.get().map { ProvenanceArtifact("project${it.component.buildTreePath}", it.file) })
+                        .sortedWith(compareBy({ it.coordinate }, { it.file.name }))
                     output.bufferedWriter().use { writer ->
                         writer.appendLine("coordinate\tartifact\tsha256")
                         artifacts.forEach { artifact ->
-                            check(artifact.file.isFile) { "Missing runtime artifact ${artifact.id.displayName}" }
+                            check(artifact.file.isFile) { "Missing runtime artifact ${artifact.coordinate}: ${artifact.file.name}" }
                             val digest = MessageDigest.getInstance("SHA-256")
                             artifact.file.inputStream().use { input ->
                                 val buffer = ByteArray(65536)
@@ -79,7 +126,7 @@ allprojects {
                                 }
                             }
                             val hash = digest.digest().joinToString("") { "%02x".format(it) }
-                            writer.appendLine("${coordinate(artifact)}\t${artifact.file.name}\t$hash")
+                            writer.appendLine("${artifact.coordinate}\t${artifact.file.name}\t$hash")
                         }
                     }
                 }

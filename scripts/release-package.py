@@ -4,6 +4,7 @@
 Only committed Borealis/SDK source is archived. No .env, signing key, local
 database, Gradle cache, or dirty local file can enter the source archives.
 """
+import csv
 import hashlib
 import json
 import os
@@ -86,8 +87,23 @@ with tarfile.open(gplay_archive, 'r:gz') as archive:
         raise SystemExit('GPlayAPI source archive is missing its license.')
 
 dependencies = output / 'runtime-dependencies.tsv'
-if not dependencies.is_file() or 'com.auroraoss:gplayapi:3.6.4\t' not in dependencies.read_text():
+if not dependencies.is_file():
     raise SystemExit('Resolved release dependency provenance is missing.')
+with dependencies.open() as stream:
+    manifest = csv.DictReader(stream, delimiter='\t')
+    if manifest.fieldnames != ['coordinate', 'artifact', 'sha256']:
+        raise SystemExit('Unexpected dependency provenance format.')
+    dependency_rows = list(manifest)
+required_coordinates = {
+    'com.auroraoss:gplayapi:3.6.4',
+    'project:light-sdk:sdk:client',
+    'project:light-sdk:sdk:shared',
+    'project:light-sdk:sdk:ui',
+}
+if not required_coordinates <= {row['coordinate'] for row in dependency_rows}:
+    raise SystemExit('Dependency provenance is missing required Play client or Light SDK artifacts.')
+if not all(row['artifact'] and re.fullmatch(r'[0-9a-f]{64}', row['sha256'] or '') for row in dependency_rows):
+    raise SystemExit('Dependency provenance contains an invalid artifact hash.')
 provenance = {
     'schemaVersion': 1,
     'lane': 'experimental-sideloaded',

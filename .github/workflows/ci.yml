@@ -64,8 +64,9 @@ jobs:
           with manifest.open() as stream:
               rows = list(csv.DictReader(stream, delimiter='\t'))
           assert any(row['coordinate'] == 'com.auroraoss:gplayapi:3.6.4' for row in rows)
+          sdk_rows = {row['coordinate'] for row in rows if row['coordinate'].startswith('project')}
           assert {'project:light-sdk:sdk:client', 'project:light-sdk:sdk:shared',
-                  'project:light-sdk:sdk:ui'} <= {row['coordinate'] for row in rows}
+                  'project:light-sdk:sdk:ui'} <= sdk_rows, f'Missing SDK artifacts; found {sorted(sdk_rows)}'
           assert all(re.fullmatch('[0-9a-f]{64}', row['sha256']) for row in rows)
           assert any(row['artifact'].endswith('.aar') for row in rows)
           print(f'Verified {len(rows)} resolved dependency hashes.')
@@ -84,6 +85,8 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: android-test-reports
-          path: app/build/reports/tests/
+          path: |
+            app/build/reports/tests/
+            app/build/reports/dependency-provenance/
           if-no-files-found: warn
           retention-days: 7
