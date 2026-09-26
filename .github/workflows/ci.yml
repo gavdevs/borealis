@@ -50,8 +50,7 @@ jobs:
       - name: Verify the experimental SDK dependency policy
         run: >-
           ./gradlew --no-daemon --max-workers=1
-          -Pborealis.sdkPath=.ci/light-sdk
-          :light-sdk:plugin:test
+          -p .ci/light-sdk/plugin test
           --tests com.thelightphone.plugin.LightSdkPluginValidationTest
       - name: Unit tests, debug APK, and dependency provenance
         run: >-
