@@ -1,0 +1,22 @@
+[versions]
+agp = "8.12.3"
+kotlin = "2.3.20"
+ksp = "2.3.6"
+sdk = "0.1.1"
+gplayapi = "3.6.4"
+protobuf = "4.34.1"
+
+[libraries]
+sdk-client = { module = "com.thelightphone:client", version.ref = "sdk" }
+gplayapi = { module = "com.auroraoss:gplayapi", version.ref = "gplayapi" }
+protobuf-java = { module = "com.google.protobuf:protobuf-java", version.ref = "protobuf" }
+kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
+kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version = "1.10.2" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
+light-sdk = { id = "com.thelightphone.light-sdk" }

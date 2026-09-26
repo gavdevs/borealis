@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="960" height="590" viewBox="0 0 960 590" role="img" aria-labelledby="title desc">
+  <title id="title">Three monochrome icon concepts for Borealis</title>
+  <desc id="desc">Curtain uses three gently rising aurora strokes. North uses an open circle with a north-east pointer. Open B is a broken-line letterform. Each is shown enlarged and beside the Borealis wordmark at twenty pixels, in black on white and white on black.</desc>
+  <defs>
+    <g id="curtain" fill="none" stroke-width="2" stroke-linecap="round"><path d="M4 20C4 12 8 13 8 6M10 20C10 11 14 12 14 3M16 20C16 13 20 14 20 8"/></g>
+    <g id="north" fill="none" stroke-width="2" stroke-linecap="round"><path d="M6.8 5.9A8 8 0 1 0 18.1 17.2M12 12L19.8 4.2M14.8 4.2H19.8V9.2"/></g>
+    <g id="open-b" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 20V4H11C17 4 17 11 11 11H9M9 14H13C20 14 20 21 13 21H9"/></g>
+  </defs>
+  <rect width="960" height="590" fill="#fff"/>
+  <g font-family="DejaVu Sans, sans-serif" fill="#000">
+    <text x="40" y="44" font-size="20">Borealis</text>
+    <text x="920" y="43" text-anchor="end" font-size="12" fill="#666">ICON STUDIES</text>
+    <path d="M40 68H920" fill="none" stroke="#bbb"/>
+    <g font-size="12" letter-spacing="1.6" fill="#666">
+      <text x="56" y="111">A / CURTAIN</text><text x="360" y="111">B / NORTH</text><text x="664" y="111">C / OPEN B</text>
+    </g>
+    <g stroke="#000">
+      <use xlink:href="#curtain" transform="translate(134 142) scale(4)"/>
+      <use xlink:href="#north" transform="translate(438 142) scale(4)"/>
+      <use xlink:href="#open-b" transform="translate(742 142) scale(4)"/>
+      <use xlink:href="#curtain" transform="translate(116 291) scale(.833333)"/>
+      <use xlink:href="#north" transform="translate(420 291) scale(.833333)"/>
+      <use xlink:href="#open-b" transform="translate(724 291) scale(.833333)"/>
+    </g>
+    <g font-size="20"><text x="150" y="308">Borealis</text><text x="454" y="308">Borealis</text><text x="758" y="308">Borealis</text></g>
+    <g font-size="12" fill="#666" text-anchor="middle"><text x="182" y="344">20 px · header size</text><text x="486" y="344">20 px · header size</text><text x="790" y="344">20 px · header size</text></g>
+    <rect x="40" y="378" width="880" height="124" fill="#000"/>
+    <g stroke="#fff"><use xlink:href="#curtain" transform="translate(116 425) scale(.833333)"/><use xlink:href="#north" transform="translate(420 425) scale(.833333)"/><use xlink:href="#open-b" transform="translate(724 425) scale(.833333)"/></g>
+    <g font-size="20" fill="#fff"><text x="150" y="442">Borealis</text><text x="454" y="442">Borealis</text><text x="758" y="442">Borealis</text></g>
+    <g font-size="13" fill="#666" text-anchor="middle"><text x="182" y="549">Quiet aurora strokes.</text><text x="486" y="549">A northern direction.</text><text x="790" y="549">A simple letterform.</text></g>
+  </g>
+</svg>

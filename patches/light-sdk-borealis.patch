@@ -1,0 +1,807 @@
+diff --git a/plugin/src/main/kotlin/com/thelightphone/plugin/LightSdkPlugin.kt b/plugin/src/main/kotlin/com/thelightphone/plugin/LightSdkPlugin.kt
+index 594de64443f63cbbbe0d7582e9cd9160d7925f0f..dbf2edd2a644f3af65fecce16980df3ecd63377f 100644
+--- a/plugin/src/main/kotlin/com/thelightphone/plugin/LightSdkPlugin.kt
++++ b/plugin/src/main/kotlin/com/thelightphone/plugin/LightSdkPlugin.kt
+@@ -16,6 +16,11 @@ class LightSdkPlugin : Plugin<Project> {
+ 
+         val SDK_DEPENDENCIES = SDK_MODULES.mapTo(mutableSetOf()) { "com.thelightphone:$it" }
+ 
++        val EXACT_ALLOWED_DEPENDENCIES = setOf(
++            "com.auroraoss:gplayapi:3.6.4",
++            "com.google.protobuf:protobuf-java:4.34.1",
++        )
++
+         private val PREFIX_ALLOWED_DEPENDENCIES = setOf(
+             "org.jetbrains.kotlin:kotlin-stdlib",
+             "org.jetbrains.kotlin:kotlin-test",
+@@ -46,7 +51,8 @@ class LightSdkPlugin : Plugin<Project> {
+             "org.sol4k:utilities",
+         )
+ 
+-        val ALLOWED_DEPENDENCIES = PREFIX_ALLOWED_DEPENDENCIES + SDK_DEPENDENCIES
++        val ALLOWED_DEPENDENCIES =
++            PREFIX_ALLOWED_DEPENDENCIES + SDK_DEPENDENCIES + EXACT_ALLOWED_DEPENDENCIES
+ 
+         val ALLOWED_PLUGINS = setOf(
+             "com.android.application",
+@@ -399,9 +405,10 @@ class LightSdkPlugin : Plugin<Project> {
+      */
+     private fun isKspConfig(name: String): Boolean = name.startsWith("ksp")
+ 
+-    internal fun isAllowed(group: String, name: String): Boolean {
++    internal fun isAllowed(group: String, name: String, version: String? = null): Boolean {
+         val coordinate = "$group:$name"
+         return coordinate in SDK_DEPENDENCIES ||
++            "$coordinate:$version" in EXACT_ALLOWED_DEPENDENCIES ||
+             PREFIX_ALLOWED_DEPENDENCIES.any { coordinate.startsWith(it) }
+     }
+ 
+@@ -453,7 +460,7 @@ class LightSdkPlugin : Plugin<Project> {
+                             violations.add("  ${config.name}: ${group}:${dep.name}:${dep.version ?: "?"} (KSP processor not allowed)")
+                         }
+                     } else {
+-                        if (!isAllowed(group, dep.name)) {
++                        if (!isAllowed(group, dep.name, dep.version)) {
+                             violations.add("  ${config.name}: ${group}:${dep.name}:${dep.version ?: "?"}")
+                         }
+                     }
+@@ -484,8 +491,9 @@ class LightSdkPlugin : Plugin<Project> {
+                 }
+ 
+                 val isKsp = isKspConfig(config.name)
+-                val allowPredicate: (String, String) -> Boolean =
+-                    if (isKsp) ::isAllowedKspProcessor else ::isAllowed
++                val allowPredicate: (String, String, String?) -> Boolean =
++                    if (isKsp) { group, name, _ -> isAllowedKspProcessor(group, name) }
++                    else ::isAllowed
+ 
+                 // Collect coordinates that are transitives of allowed first-level deps.
+                 // Only trust transitives of allowed module deps — not project deps,
+@@ -502,7 +510,7 @@ class LightSdkPlugin : Plugin<Project> {
+ 
+                 resolved.forEach { dep ->
+                     if (isProjectDependency(dep, project)) return@forEach
+-                    if (allowPredicate(dep.moduleGroup, dep.moduleName)) {
++                    if (allowPredicate(dep.moduleGroup, dep.moduleName, dep.moduleVersion)) {
+                         collectTransitives(dep)
+                     }
+                 }
+@@ -513,7 +521,7 @@ class LightSdkPlugin : Plugin<Project> {
+                     val resolvedCoord = "${dep.moduleGroup}:${dep.moduleName}"
+ 
+                     if (resolvedCoord in allowedTransitives) return@forEach
+-                    if (allowPredicate(dep.moduleGroup, dep.moduleName)) return@forEach
++                    if (allowPredicate(dep.moduleGroup, dep.moduleName, dep.moduleVersion)) return@forEach
+ 
+                     val tag = if (isKsp) "unexpected resolved KSP dependency" else "unexpected resolved dependency — possible substitution"
+                     violations.add("  ${config.name}: $resolvedCoord:${dep.moduleVersion} ($tag)")
+diff --git a/plugin/src/main/kotlin/com/thelightphone/plugin/LightToolMetadata.kt b/plugin/src/main/kotlin/com/thelightphone/plugin/LightToolMetadata.kt
+index ca15a3fdcb1c38a475762eadbe4a814d5ff7ae8b..a9bc93a51c978b25cc2c0d6970eb4a1cbb3d1c7a 100644
+--- a/plugin/src/main/kotlin/com/thelightphone/plugin/LightToolMetadata.kt
++++ b/plugin/src/main/kotlin/com/thelightphone/plugin/LightToolMetadata.kt
+@@ -200,8 +200,12 @@ object LightToolPolicy {
+     )
+ 
+     const val DETACHED_AUDIO: String = "detached-audio"
++    const val PACKAGE_INSTALL_REQUEST: String = "package-install-request"
+ 
+-    val ALLOWED_CAPABILITIES: Set<String> = setOf(DETACHED_AUDIO)
++    val ALLOWED_CAPABILITIES: Set<String> = setOf(
++        DETACHED_AUDIO,
++        PACKAGE_INSTALL_REQUEST,
++    )
+ 
+     /**
+      * Permissions a capability contributes to the generated manifest. These are
+@@ -214,6 +218,11 @@ object LightToolPolicy {
+             "android.permission.FOREGROUND_SERVICE",
+             "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+         ),
++        PACKAGE_INSTALL_REQUEST to listOf(
++            "android.permission.REQUEST_INSTALL_PACKAGES",
++            "android.permission.QUERY_ALL_PACKAGES",
++            "android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION",
++        ),
+     )
+ 
+     /**
+diff --git a/plugin/src/main/kotlin/com/thelightphone/plugin/ManifestGenerator.kt b/plugin/src/main/kotlin/com/thelightphone/plugin/ManifestGenerator.kt
+index cfed5953310dd4f5297658498322216ad8a3de8d..46298eac85927b865c3ad1bdbd66ee6329e543de 100644
+--- a/plugin/src/main/kotlin/com/thelightphone/plugin/ManifestGenerator.kt
++++ b/plugin/src/main/kotlin/com/thelightphone/plugin/ManifestGenerator.kt
+@@ -65,6 +65,13 @@ object ManifestGenerator {
+                 """        </service>""",
+             )
+         )
++        val packageInstallReceiver = marginBlock(
++            if (LightToolPolicy.PACKAGE_INSTALL_REQUEST !in metadata.capabilities) emptyList() else listOf(
++                """        <receiver""",
++                """            android:name="com.thelightphone.sdk.install.LightPackageInstallReceiver"""",
++                """            android:exported="false" />""",
++            )
++        )
+         appendLine(
+             """
+             |    <application
+@@ -95,7 +102,7 @@ object ManifestGenerator {
+             |            <meta-data
+             |                android:name="com.thelightphone.sdk.SDK_VERSION"
+             |                android:value="${'$'}{sdkVersion}" />
+-            |        </receiver>$detachedAudioService
++            |        </receiver>$detachedAudioService$packageInstallReceiver
+             |    </application>
+             |    <queries>
+             |        <intent>
+diff --git a/plugin/src/test/kotlin/com/thelightphone/plugin/LightSdkPluginValidationTest.kt b/plugin/src/test/kotlin/com/thelightphone/plugin/LightSdkPluginValidationTest.kt
+index b3ab6c0cb5db0c761c96f7d6bc2a7965f13ca841..f493c590b38a5b63103355b0b14219d377021cc4 100644
+--- a/plugin/src/test/kotlin/com/thelightphone/plugin/LightSdkPluginValidationTest.kt
++++ b/plugin/src/test/kotlin/com/thelightphone/plugin/LightSdkPluginValidationTest.kt
+@@ -373,6 +373,28 @@ class LightSdkPluginValidationTest {
+         assertFalse(LightSdkPlugin().isAllowed("com.thelightphone", "client-untrusted"))
+     }
+ 
++    @Test
++    fun `gplayapi is allowed by exact coordinate`() {
++        assertTrue(LightSdkPlugin().isAllowed("com.auroraoss", "gplayapi", "3.6.4"))
++    }
++
++    @Test
++    fun `gplayapi lookalike is not allowed`() {
++        assertFalse(LightSdkPlugin().isAllowed("com.auroraoss", "gplayapi-untrusted", "3.6.4"))
++    }
++
++    @Test
++    fun `other gplayapi versions are not allowed`() {
++        assertFalse(LightSdkPlugin().isAllowed("com.auroraoss", "gplayapi", "3.6.5"))
++    }
++
++    @Test
++    fun `protobuf runtime required by gplayapi is exactly pinned`() {
++        assertTrue(LightSdkPlugin().isAllowed("com.google.protobuf", "protobuf-java", "4.34.1"))
++        assertFalse(LightSdkPlugin().isAllowed("com.google.protobuf", "protobuf-java", "4.34.2"))
++        assertFalse(LightSdkPlugin().isAllowed("com.google.protobuf", "protobuf-javalite", "4.34.1"))
++    }
++
+     // ---------------------------------------------------------------------
+     // INTERNAL_CONFIG_PREFIXES no longer skips ksp
+     // ---------------------------------------------------------------------
+diff --git a/plugin/src/test/kotlin/com/thelightphone/plugin/LightToolMetadataTest.kt b/plugin/src/test/kotlin/com/thelightphone/plugin/LightToolMetadataTest.kt
+index dde2aa033e80cf425ca4b5847ee06d67d593dedd..474b3089113573204927e6900644bd5fa4acdad8 100644
+--- a/plugin/src/test/kotlin/com/thelightphone/plugin/LightToolMetadataTest.kt
++++ b/plugin/src/test/kotlin/com/thelightphone/plugin/LightToolMetadataTest.kt
+@@ -139,6 +139,40 @@ class LightToolMetadataTest {
+         assert(ex.message!!.contains("detached-audio")) { ex.message ?: "" }
+     }
+ 
++    @Test
++    fun `package install capability is accepted`(@TempDir dir: Path) {
++        val file = writeToml(dir, """
++            [tool]
++            id = "com.example.installer"
++            label = "Installer"
++            versionCode = 1
++            versionName = "1.0.0"
++            serverPackage = "com.lightos"
++            capabilities = ["package-install-request"]
++        """.trimIndent())
++
++        assertEquals(
++            listOf("package-install-request"),
++            LightToolMetadata.parse(file).capabilities,
++        )
++    }
++
++    @Test
++    fun `package install permissions must come from capability`(@TempDir dir: Path) {
++        val file = writeToml(dir, """
++            [tool]
++            id = "com.example.installer"
++            label = "Installer"
++            versionCode = 1
++            versionName = "1.0.0"
++            serverPackage = "com.lightos"
++            permissions = ["android.permission.REQUEST_INSTALL_PACKAGES"]
++        """.trimIndent())
++
++        val ex = assertThrows<LightToolMetadataException> { LightToolMetadata.parse(file) }
++        assert(ex.message!!.contains("package-install-request")) { ex.message ?: "" }
++    }
++
+     @Test
+     fun `missing file fails`(@TempDir dir: Path) {
+         val file = dir.resolve("lighttool.toml").toFile()
+diff --git a/plugin/src/test/kotlin/com/thelightphone/plugin/ManifestGeneratorTest.kt b/plugin/src/test/kotlin/com/thelightphone/plugin/ManifestGeneratorTest.kt
+index f57fd0ce866d0abfdda2b8567932e77a7a6599a8..644c72d91e29cb754a43489b35dbb8a5d8314bc8 100644
+--- a/plugin/src/test/kotlin/com/thelightphone/plugin/ManifestGeneratorTest.kt
++++ b/plugin/src/test/kotlin/com/thelightphone/plugin/ManifestGeneratorTest.kt
+@@ -131,6 +131,38 @@ class ManifestGeneratorTest {
+         assertTrue(xml.contains("""<action android:name="androidx.media3.session.MediaSessionService" />"""))
+     }
+ 
++    @Test
++    fun `package install capability generates installer permissions`() {
++        val xml = render(capabilities = listOf("package-install-request"))
++
++        assertTrue(xml.contains("""<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />"""))
++        assertTrue(xml.contains("""<uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />"""))
++        assertTrue(xml.contains("""<uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />"""))
++    }
++
++    @Test
++    fun `package install capability emits marker and non-exported receiver`() {
++        val xml = render(capabilities = listOf("package-install-request"))
++
++        assertTrue(xml.contains("""android:name="com.thelightphone.sdk.CAPABILITY_PACKAGE_INSTALL_REQUEST""""))
++        assertTrue(xml.contains("""android:name="com.thelightphone.sdk.install.LightPackageInstallReceiver""""))
++        assertTrue(
++            Regex(
++                """<receiver\s+android:name="com\.thelightphone\.sdk\.install\.LightPackageInstallReceiver"\s+android:exported="false"\s*/>"""
++            ).containsMatchIn(xml),
++            "expected a non-exported install receiver; got:\n$xml",
++        )
++    }
++
++    @Test
++    fun `package install components are omitted without capability`() {
++        val xml = render()
++
++        assertFalse(xml.contains("android.permission.REQUEST_INSTALL_PACKAGES"))
++        assertFalse(xml.contains("CAPABILITY_PACKAGE_INSTALL_REQUEST"))
++        assertFalse(xml.contains("LightPackageInstallReceiver"))
++    }
++
+     @Test
+     fun `server package is emitted as meta-data in application element`() {
+         val xml = render(serverPackage = "com.lightos")
+diff --git a/sdk/client/src/main/kotlin/com/thelightphone/sdk/LightActivity.kt b/sdk/client/src/main/kotlin/com/thelightphone/sdk/LightActivity.kt
+index 07f9a403ff0c2b8d2ab999b72f7b71ee2d83e007..1435e9c70ef80c3861d1cd1578dec7975c5ab9ff 100644
+--- a/sdk/client/src/main/kotlin/com/thelightphone/sdk/LightActivity.kt
++++ b/sdk/client/src/main/kotlin/com/thelightphone/sdk/LightActivity.kt
+@@ -28,6 +28,7 @@ import androidx.lifecycle.ViewModelStoreOwner
+ import androidx.lifecycle.lifecycleScope
+ import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
+ import com.thelightphone.lp3Keyboard.ui.LightDeviceKeys
++import com.thelightphone.sdk.install.LightPackageInstaller
+ import com.thelightphone.sdk.shared.LightServiceMethod
+ import com.thelightphone.sdk.ui.LightModalManager
+ import com.thelightphone.sdk.ui.LocalHapticsEnabled
+@@ -231,6 +232,7 @@ class SealedLightContext(internal val androidContext: Context) {
+     val filesDir: File by lazy{ androidContext.filesDir }
+     val fileShare: LightFileShare by lazy { LightFileShare(androidContext) }
+     val connectivity: LightConnectivity by lazy { LightConnectivity(androidContext) }
++    val packageInstaller: LightPackageInstaller by lazy { LightPackageInstaller(androidContext) }
+     fun readAsset(path: String): ByteArray = androidContext.assets.open(path).use { it.readBytes() }
+ }
+ /**
+diff --git a/sdk/client/src/main/kotlin/com/thelightphone/sdk/install/LightPackageInstallReceiver.kt b/sdk/client/src/main/kotlin/com/thelightphone/sdk/install/LightPackageInstallReceiver.kt
+new file mode 100644
+index 0000000000000000000000000000000000000000..d9fb36992a65cb856525440ef3ca4b7aa731422a
+--- /dev/null
++++ b/sdk/client/src/main/kotlin/com/thelightphone/sdk/install/LightPackageInstallReceiver.kt
+@@ -0,0 +1,81 @@
++package com.thelightphone.sdk.install
++
++import android.content.BroadcastReceiver
++import android.content.Context
++import android.content.Intent
++import android.content.pm.PackageInstaller
++
++class LightPackageInstallReceiver : BroadcastReceiver() {
++    override fun onReceive(context: Context, intent: Intent) {
++        val sessionId = intent.getIntExtra(
++            EXTRA_LIGHT_SESSION_ID,
++            intent.getIntExtra(PackageInstaller.EXTRA_SESSION_ID, -1),
++        )
++        if (sessionId < 0) return
++
++        val packageName = intent.getStringExtra(PackageInstaller.EXTRA_PACKAGE_NAME)
++            ?: intent.getStringExtra(EXTRA_LIGHT_EXPECTED_PACKAGE)
++        val status = intent.getIntExtra(
++            PackageInstaller.EXTRA_STATUS,
++            PackageInstaller.STATUS_FAILURE,
++        )
++
++        if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
++            LightPackageInstallResultStore.write(
++                context,
++                LightPackageInstallResult(
++                    sessionId = sessionId,
++                    packageName = packageName,
++                    outcome = LightPackageInstallOutcome.AwaitingUserAction,
++                    message = null,
++                )
++            )
++            val confirmation = intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java)
++            if (confirmation != null) {
++                confirmation.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
++                runCatching { context.startActivity(confirmation) }
++                    .onFailure { error ->
++                        LightPackageInstallResultStore.write(
++                            context,
++                            LightPackageInstallResult(
++                                sessionId = sessionId,
++                                packageName = packageName,
++                                outcome = LightPackageInstallOutcome.AwaitingUserAction,
++                                message = error.message
++                                    ?: "Open the installer to approve this installation.",
++                            )
++                        )
++                    }
++            }
++            return
++        }
++
++        val outcome = when (status) {
++            PackageInstaller.STATUS_SUCCESS -> LightPackageInstallOutcome.Installed
++            PackageInstaller.STATUS_FAILURE_ABORTED -> LightPackageInstallOutcome.Cancelled
++            else -> LightPackageInstallOutcome.Failed
++        }
++        val message = when (status) {
++            PackageInstaller.STATUS_SUCCESS -> "Installed"
++            PackageInstaller.STATUS_FAILURE_ABORTED -> "Install cancelled"
++            PackageInstaller.STATUS_FAILURE_BLOCKED -> "Installation blocked by the system"
++            PackageInstaller.STATUS_FAILURE_CONFLICT ->
++                "The installed app has a different signing certificate"
++            PackageInstaller.STATUS_FAILURE_INCOMPATIBLE ->
++                "The app is not compatible with this device"
++            PackageInstaller.STATUS_FAILURE_INVALID -> "The Android package is invalid"
++            PackageInstaller.STATUS_FAILURE_STORAGE -> "Not enough storage"
++            else -> intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)
++                ?: "Installation failed"
++        }
++        LightPackageInstallResultStore.write(
++            context,
++            LightPackageInstallResult(
++                sessionId = sessionId,
++                packageName = packageName,
++                outcome = outcome,
++                message = message,
++            )
++        )
++    }
++}
+diff --git a/sdk/client/src/main/kotlin/com/thelightphone/sdk/install/LightPackageInstaller.kt b/sdk/client/src/main/kotlin/com/thelightphone/sdk/install/LightPackageInstaller.kt
+new file mode 100644
+index 0000000000000000000000000000000000000000..87a5a6732b6663529244acb63b1038a99ba11acb
+--- /dev/null
++++ b/sdk/client/src/main/kotlin/com/thelightphone/sdk/install/LightPackageInstaller.kt
+@@ -0,0 +1,311 @@
++package com.thelightphone.sdk.install
++
++import android.app.PendingIntent
++import android.content.Context
++import android.content.Intent
++import android.content.pm.PackageInfo
++import android.content.pm.PackageInstaller
++import android.content.pm.PackageManager
++import android.net.Uri
++import android.provider.Settings
++import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.withContext
++import java.io.File
++import java.nio.file.Files
++import java.security.MessageDigest
++
++data class LightPackageArtifact(
++    val name: String,
++    val relativePath: String,
++)
++
++data class LightPackageInstallRequest(
++    val packageName: String,
++    val baseApk: LightPackageArtifact,
++    val splitApks: List<LightPackageArtifact> = emptyList(),
++    val preferUnattendedUpdate: Boolean = false,
++)
++
++data class LightPackageIdentity(
++    val packageName: String,
++    val versionCode: Long,
++    val versionName: String?,
++    val signerSha256: List<String>,
++)
++
++data class LightPackageInstallSession(val id: Int)
++
++enum class LightPackageInstallOutcome {
++    AwaitingUserAction,
++    Installed,
++    Cancelled,
++    Failed,
++}
++
++data class LightPackageInstallResult(
++    val sessionId: Int,
++    val packageName: String?,
++    val outcome: LightPackageInstallOutcome,
++    val message: String?,
++)
++
++class LightPackageInstallException(message: String, cause: Throwable? = null) :
++    RuntimeException(message, cause)
++
++class LightPackageInstaller internal constructor(private val androidContext: Context) {
++
++    val canRequestPackageInstalls: Boolean
++        get() {
++            androidContext.requirePackageInstallCapability()
++            return androidContext.packageManager.canRequestPackageInstalls()
++        }
++
++    fun openInstallAccessSettings(): Boolean {
++        androidContext.requirePackageInstallCapability()
++        val intent = Intent(
++            Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
++            Uri.parse("package:${androidContext.packageName}"),
++        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
++        return runCatching {
++            androidContext.startActivity(intent)
++            true
++        }.getOrDefault(false)
++    }
++
++    fun installedPackage(packageName: String): LightPackageIdentity? {
++        androidContext.requirePackageInstallCapability()
++        return try {
++            androidContext.packageManager.getPackageInfo(
++                packageName,
++                PackageManager.PackageInfoFlags.of(
++                    PackageManager.GET_SIGNING_CERTIFICATES.toLong()
++                ),
++            ).toIdentity()
++        } catch (_: PackageManager.NameNotFoundException) {
++            null
++        }
++    }
++
++    fun inspectBaseApk(relativePath: String): LightPackageIdentity? {
++        androidContext.requirePackageInstallCapability()
++        val apk = resolvePrivateArtifact(androidContext.filesDir, relativePath)
++        return androidContext.packageManager.getPackageArchiveInfo(
++            apk.absolutePath,
++            PackageManager.PackageInfoFlags.of(
++                PackageManager.GET_SIGNING_CERTIFICATES.toLong()
++            ),
++        )?.toIdentity()
++    }
++
++    suspend fun install(request: LightPackageInstallRequest): LightPackageInstallSession =
++        withContext(Dispatchers.IO) {
++            androidContext.requirePackageInstallCapability()
++            val artifacts = validateInstallRequest(request).map { artifact ->
++                artifact to resolvePrivateArtifact(androidContext.filesDir, artifact.relativePath)
++            }
++
++            val baseIdentity = androidContext.packageManager.getPackageArchiveInfo(
++                artifacts.first().second.absolutePath,
++                PackageManager.PackageInfoFlags.of(
++                    PackageManager.GET_SIGNING_CERTIFICATES.toLong()
++                ),
++            )?.toIdentity() ?: throw LightPackageInstallException(
++                "The base artifact is not a readable Android package."
++            )
++            if (baseIdentity.packageName != request.packageName) {
++                throw LightPackageInstallException(
++                    "The base artifact is ${baseIdentity.packageName}, not ${request.packageName}."
++                )
++            }
++
++            val packageInstaller = androidContext.packageManager.packageInstaller
++            val params = PackageInstaller.SessionParams(
++                PackageInstaller.SessionParams.MODE_FULL_INSTALL
++            ).apply {
++                setAppPackageName(request.packageName)
++                setPackageSource(PackageInstaller.PACKAGE_SOURCE_STORE)
++                val canUpdateWithoutPrompt = request.preferUnattendedUpdate &&
++                    androidContext.isInstallerOfRecord(request.packageName)
++                setRequireUserAction(
++                    if (canUpdateWithoutPrompt) {
++                        PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED
++                    } else {
++                        PackageInstaller.SessionParams.USER_ACTION_REQUIRED
++                    }
++                )
++            }
++
++            val sessionId = try {
++                packageInstaller.createSession(params)
++            } catch (error: Exception) {
++                throw LightPackageInstallException("Could not create an install session.", error)
++            }
++
++            try {
++                packageInstaller.openSession(sessionId).use { session ->
++                    for ((artifact, file) in artifacts) {
++                        session.openWrite(artifact.name, 0, file.length()).use { output ->
++                            file.inputStream().use { input -> input.copyTo(output) }
++                            session.fsync(output)
++                        }
++                    }
++
++                    LightPackageInstallResultStore.clear(androidContext, sessionId)
++                    val callback = Intent(
++                        androidContext,
++                        LightPackageInstallReceiver::class.java,
++                    ).apply {
++                        putExtra(EXTRA_LIGHT_SESSION_ID, sessionId)
++                        putExtra(EXTRA_LIGHT_EXPECTED_PACKAGE, request.packageName)
++                    }
++                    val pending = PendingIntent.getBroadcast(
++                        androidContext,
++                        sessionId,
++                        callback,
++                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
++                    )
++                    session.commit(pending.intentSender)
++                }
++            } catch (error: Exception) {
++                runCatching { packageInstaller.abandonSession(sessionId) }
++                throw LightPackageInstallException("Could not submit the install session.", error)
++            }
++
++            LightPackageInstallSession(sessionId)
++        }
++
++    fun result(sessionId: Int): LightPackageInstallResult? {
++        androidContext.requirePackageInstallCapability()
++        return LightPackageInstallResultStore.read(androidContext, sessionId)
++    }
++
++    fun clearResult(sessionId: Int) {
++        androidContext.requirePackageInstallCapability()
++        LightPackageInstallResultStore.clear(androidContext, sessionId)
++    }
++}
++
++internal const val EXTRA_LIGHT_SESSION_ID =
++    "com.thelightphone.sdk.install.extra.SESSION_ID"
++internal const val EXTRA_LIGHT_EXPECTED_PACKAGE =
++    "com.thelightphone.sdk.install.extra.EXPECTED_PACKAGE"
++
++private val INSTALL_NAME_PATTERN = Regex("^[A-Za-z0-9._-]+\\.apk$")
++
++internal fun validateInstallRequest(
++    request: LightPackageInstallRequest,
++): List<LightPackageArtifact> {
++    if (request.packageName.isBlank() || request.packageName.any(Char::isWhitespace)) {
++        throw LightPackageInstallException("A package name is required.")
++    }
++    val artifacts = listOf(request.baseApk) + request.splitApks
++    val names = mutableSetOf<String>()
++    artifacts.forEach { artifact ->
++        if (!INSTALL_NAME_PATTERN.matches(artifact.name)) {
++            throw LightPackageInstallException(
++                "Artifact names must be safe APK names; got '${artifact.name}'."
++            )
++        }
++        if (!names.add(artifact.name)) {
++            throw LightPackageInstallException("Duplicate artifact name: ${artifact.name}")
++        }
++        if (artifact.relativePath.isBlank()) {
++            throw LightPackageInstallException("Artifact paths cannot be blank.")
++        }
++    }
++    return artifacts
++}
++
++internal fun resolvePrivateArtifact(root: File, relativePath: String): File {
++    val relative = File(relativePath)
++    if (relative.isAbsolute) {
++        throw LightPackageInstallException("Artifact paths must be relative to the app files directory.")
++    }
++    val rootCanonical = root.canonicalFile
++    val candidate = File(rootCanonical, relativePath)
++    var current: File? = candidate
++    while (current != null && current != rootCanonical) {
++        if (Files.isSymbolicLink(current.toPath())) {
++            throw LightPackageInstallException("Symbolic links are not allowed in artifact paths.")
++        }
++        current = current.parentFile
++    }
++    val canonical = candidate.canonicalFile
++    if (canonical == rootCanonical || !canonical.toPath().startsWith(rootCanonical.toPath())) {
++        throw LightPackageInstallException("Artifact path escapes the app files directory.")
++    }
++    if (!canonical.isFile || canonical.length() <= 0L) {
++        throw LightPackageInstallException("Artifact does not exist or is empty: $relativePath")
++    }
++    return canonical
++}
++
++private fun Context.isInstallerOfRecord(packageName: String): Boolean = try {
++    packageManager.getInstallSourceInfo(packageName).installingPackageName == this.packageName
++} catch (_: PackageManager.NameNotFoundException) {
++    false
++}
++
++private fun PackageInfo.toIdentity(): LightPackageIdentity {
++    val signatures = signingInfo?.let { info ->
++        if (info.hasMultipleSigners()) info.apkContentsSigners else info.signingCertificateHistory
++    }.orEmpty()
++    return LightPackageIdentity(
++        packageName = packageName,
++        versionCode = longVersionCode,
++        versionName = versionName,
++        signerSha256 = signatures
++            .map { signature -> sha256(signature.toByteArray()) }
++            .distinct()
++            .sorted(),
++    )
++}
++
++private fun sha256(bytes: ByteArray): String =
++    MessageDigest.getInstance("SHA-256")
++        .digest(bytes)
++        .joinToString("") { byte -> "%02x".format(byte) }
++
++internal object LightPackageInstallResultStore {
++    private const val PREFERENCES = "LIGHT_PACKAGE_INSTALL_RESULTS"
++
++    fun write(context: Context, result: LightPackageInstallResult) {
++        val prefix = prefix(result.sessionId)
++        context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit()
++            .putString(prefix + "outcome", result.outcome.name)
++            .apply {
++                if (result.packageName == null) remove(prefix + "package")
++                else putString(prefix + "package", result.packageName)
++                if (result.message == null) remove(prefix + "message")
++                else putString(prefix + "message", result.message)
++            }
++            .apply()
++    }
++
++    fun read(context: Context, sessionId: Int): LightPackageInstallResult? {
++        val prefix = prefix(sessionId)
++        val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
++        val outcome = preferences.getString(prefix + "outcome", null)
++            ?.let { stored ->
++                LightPackageInstallOutcome.entries.firstOrNull { it.name == stored }
++            }
++            ?: return null
++        return LightPackageInstallResult(
++            sessionId = sessionId,
++            packageName = preferences.getString(prefix + "package", null),
++            outcome = outcome,
++            message = preferences.getString(prefix + "message", null),
++        )
++    }
++
++    fun clear(context: Context, sessionId: Int) {
++        val prefix = prefix(sessionId)
++        context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit()
++            .remove(prefix + "outcome")
++            .remove(prefix + "package")
++            .remove(prefix + "message")
++            .apply()
++    }
++
++    private fun prefix(sessionId: Int): String = "$sessionId:"
++}
+diff --git a/sdk/client/src/main/kotlin/com/thelightphone/sdk/install/PackageInstallCapability.kt b/sdk/client/src/main/kotlin/com/thelightphone/sdk/install/PackageInstallCapability.kt
+new file mode 100644
+index 0000000000000000000000000000000000000000..4d0ade2a00b37facf2caf76eaf6524c3d85d127a
+--- /dev/null
++++ b/sdk/client/src/main/kotlin/com/thelightphone/sdk/install/PackageInstallCapability.kt
+@@ -0,0 +1,22 @@
++package com.thelightphone.sdk.install
++
++import android.content.Context
++import android.content.pm.PackageManager
++
++private const val PACKAGE_INSTALL_MARKER =
++    "com.thelightphone.sdk.CAPABILITY_PACKAGE_INSTALL_REQUEST"
++
++internal fun Context.requirePackageInstallCapability() {
++    val appInfo = packageManager.getApplicationInfo(
++        packageName,
++        PackageManager.ApplicationInfoFlags.of(PackageManager.GET_META_DATA.toLong()),
++    )
++    if (appInfo.metaData?.getBoolean(PACKAGE_INSTALL_MARKER) != true) {
++        throw LightPackageInstallException(
++            """
++            Package installation requires this lighttool.toml capability:
++            capabilities = ["package-install-request"]
++            """.trimIndent()
++        )
++    }
++}
+diff --git a/sdk/client/src/test/kotlin/com/thelightphone/sdk/install/LightPackageInstallerTest.kt b/sdk/client/src/test/kotlin/com/thelightphone/sdk/install/LightPackageInstallerTest.kt
+new file mode 100644
+index 0000000000000000000000000000000000000000..88f808377d357a53444ae969795cad91f22327d8
+--- /dev/null
++++ b/sdk/client/src/test/kotlin/com/thelightphone/sdk/install/LightPackageInstallerTest.kt
+@@ -0,0 +1,94 @@
++package com.thelightphone.sdk.install
++
++import java.nio.file.Files
++import kotlin.test.Test
++import kotlin.test.assertEquals
++import kotlin.test.assertFailsWith
++
++class LightPackageInstallerTest {
++    @Test
++    fun `request keeps base before splits`() {
++        val request = LightPackageInstallRequest(
++            packageName = "com.example.bank",
++            baseApk = LightPackageArtifact("base.apk", "downloads/base.apk"),
++            splitApks = listOf(
++                LightPackageArtifact("split_config.en.apk", "downloads/en.apk"),
++                LightPackageArtifact("split_config.arm64_v8a.apk", "downloads/arm64.apk"),
++            ),
++        )
++
++        assertEquals(
++            listOf("base.apk", "split_config.en.apk", "split_config.arm64_v8a.apk"),
++            validateInstallRequest(request).map { it.name },
++        )
++    }
++
++    @Test
++    fun `duplicate install names are rejected`() {
++        val request = LightPackageInstallRequest(
++            packageName = "com.example.bank",
++            baseApk = LightPackageArtifact("base.apk", "downloads/base.apk"),
++            splitApks = listOf(LightPackageArtifact("base.apk", "downloads/split.apk")),
++        )
++
++        assertFailsWith<LightPackageInstallException> { validateInstallRequest(request) }
++    }
++
++    @Test
++    fun `unsafe install names are rejected`() {
++        val request = LightPackageInstallRequest(
++            packageName = "com.example.bank",
++            baseApk = LightPackageArtifact("../base.apk", "downloads/base.apk"),
++        )
++
++        assertFailsWith<LightPackageInstallException> { validateInstallRequest(request) }
++    }
++
++    @Test
++    fun `private artifact resolves beneath files directory`() {
++        val root = Files.createTempDirectory("light-package-installer")
++        try {
++            val apk = root.resolve("downloads/base.apk")
++            Files.createDirectories(apk.parent)
++            Files.write(apk, byteArrayOf(1, 2, 3))
++
++            assertEquals(apk.toFile().canonicalFile, resolvePrivateArtifact(root.toFile(), "downloads/base.apk"))
++        } finally {
++            root.toFile().deleteRecursively()
++        }
++    }
++
++    @Test
++    fun `parent traversal is rejected`() {
++        val parent = Files.createTempDirectory("light-package-installer")
++        try {
++            val root = parent.resolve("files")
++            Files.createDirectories(root)
++            val outside = parent.resolve("outside.apk")
++            Files.write(outside, byteArrayOf(1))
++
++            assertFailsWith<LightPackageInstallException> {
++                resolvePrivateArtifact(root.toFile(), "../outside.apk")
++            }
++        } finally {
++            parent.toFile().deleteRecursively()
++        }
++    }
++
++    @Test
++    fun `symbolic links are rejected`() {
++        val root = Files.createTempDirectory("light-package-installer")
++        try {
++            val target = root.resolve("target.apk")
++            Files.write(target, byteArrayOf(1))
++            val link = root.resolve("link.apk")
++            Files.createSymbolicLink(link, target)
++
++            assertFailsWith<LightPackageInstallException> {
++                resolvePrivateArtifact(root.toFile(), "link.apk")
++            }
++        } finally {
++            root.toFile().deleteRecursively()
++        }
++    }
++}
