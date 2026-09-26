@@ -9,7 +9,7 @@ this snapshot was prepared.
 
 This is an unsupported, sideload-only extension, not an approved Light Phone
 capability or an upstream contribution. It adds the `package-install-request`
-capability, installer facade/receiver, and exact GPlayAPI/protobuf dependency
+capability, installer facade/receiver, and exact GPlayAPI/protobuf/Tink dependency
 allowlist entries. Android still controls install permission and user
 confirmation; requesting unattended updates does not guarantee them. No LightOS
 server/protocol changes are included. Physical Light Phone behavior and official

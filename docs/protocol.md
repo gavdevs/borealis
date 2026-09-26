@@ -16,11 +16,25 @@ The raw device bearer is generated and retained only by the phone.
 
 ```json
 {
-  "keyId": "sha256 fingerprint",
+  "keyId": "ed25519:<first 24 lowercase hex characters of SHA-256(SPKI DER)>",
   "payload": "exact serialized JSON string",
   "signature": "base64url Ed25519 signature over payload UTF-8 bytes"
 }
 ```
+
+The key ID is the literal `ed25519:` prefix followed by the first 24 lowercase
+hexadecimal characters of SHA-256 over the complete DER-encoded SubjectPublicKeyInfo
+public key. It is not the full 64-character fingerprint. Pairing pins both this ID
+and the complete public key (encoded as unpadded base64url). A phone must match the
+envelope ID to that pairing, recompute the ID from the pinned SPKI bytes, and verify
+the signature using the complete Ed25519 public key. The ID is a key identifier,
+not a substitute for signature verification; existing key rows and pairings must
+not be regenerated to correct a client-side format mismatch.
+
+The Android verifier requires the RFC 8410 Ed25519 SPKI encoding: the exact
+12-byte prefix `302a300506032b6570032100` followed by 32 public-key bytes. It uses
+the pinned Tink implementation to verify the exact UTF-8 payload; it does not
+depend on the phone providing an Ed25519 `KeyFactory` (the LP3 does not).
 
 The v1 payload names the schema version, job and device IDs, `install_or_update` action, package and display names, accepted signer SHA-256 values, issue and expiry times, and nonce.
 

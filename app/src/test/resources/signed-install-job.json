@@ -1,0 +1,8 @@
+{
+  "clock": "2026-09-25T18:00:00Z",
+  "deviceId": "device_1234567890",
+  "publicKeySpki": "MCowBQYDK2VwAyEAz4Uc3HxkjNYwevYRF4hvLSgJMlHSljLTN3riLAYKeVM",
+  "keyId": "ed25519:c43860a75c667838ec0a435b",
+  "payload": "{\"schemaVersion\":1,\"jobId\":\"job_1234567890123456\",\"deviceId\":\"device_1234567890\",\"action\":\"install_or_update\",\"packageName\":\"com.example.bank\",\"displayName\":\"Example Bank\",\"acceptedSignerSha256\":[\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"],\"issuedAt\":\"2026-09-25T17:55:00Z\",\"expiresAt\":\"2026-09-25T18:10:00Z\",\"nonce\":\"nonce_123456789012\"}",
+  "signature": "o9zNT1qr-_sPxm4dwwQzdIyZ9ruZ1YmX4fpzwBf5REqt1rEXY1F8BKAiw63UJV9R_9T4wJX9jwZQtIayCS-CAg"
+}

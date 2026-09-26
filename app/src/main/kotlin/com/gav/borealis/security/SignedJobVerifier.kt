@@ -3,11 +3,10 @@ package com.gav.borealis.security
 import com.gav.borealis.data.BorealisSession
 import com.gav.borealis.data.SignedInstallJob
 import com.gav.borealis.data.SignedJobEnvelope
+import com.google.crypto.tink.subtle.Ed25519Verify
 import java.nio.charset.StandardCharsets
-import java.security.KeyFactory
+import java.security.GeneralSecurityException
 import java.security.MessageDigest
-import java.security.Signature
-import java.security.spec.X509EncodedKeySpec
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
@@ -29,18 +28,28 @@ class SignedJobVerifier(
         require(validKeyId(envelope.keyId)) { "The stored signing key ID is invalid." }
 
         val publicKeyBytes = decodeBase64Url(session.signingPublicKey, "signing public key")
-        val computedKeyId = sha256Hex(publicKeyBytes)
+        // Match the companion's protocol-v1 ID; still verify with the full key.
+        val computedKeyId = "ed25519:${sha256Hex(publicKeyBytes).take(24)}"
         require(MessageDigest.isEqual(computedKeyId.toByteArray(), session.keyId.toByteArray())) {
             "The companion signing key no longer matches its key ID."
         }
 
-        val publicKey = KeyFactory.getInstance("Ed25519")
-            .generatePublic(X509EncodedKeySpec(publicKeyBytes))
-        val signature = Signature.getInstance("Ed25519")
-        signature.initVerify(publicKey)
-        signature.update(envelope.payload.toByteArray(StandardCharsets.UTF_8))
-        require(signature.verify(decodeBase64Url(envelope.signature, "job signature"))) {
-            "The companion job signature is invalid."
+        // RFC 8410: Ed25519 OID, absent parameters, then exactly 32 key bytes.
+        require(
+            publicKeyBytes.size == ED25519_SPKI_PREFIX.size + 32 &&
+                publicKeyBytes.copyOfRange(0, ED25519_SPKI_PREFIX.size).contentEquals(ED25519_SPKI_PREFIX),
+        ) {
+            "The companion signing public key is not an Ed25519 SPKI key."
+        }
+        val publicKey = publicKeyBytes.copyOfRange(ED25519_SPKI_PREFIX.size, publicKeyBytes.size)
+        try {
+            // The LP3's Android provider cannot import Ed25519 SPKI keys.
+            Ed25519Verify(publicKey).verify(
+                decodeBase64Url(envelope.signature, "job signature"),
+                envelope.payload.toByteArray(StandardCharsets.UTF_8),
+            )
+        } catch (error: GeneralSecurityException) {
+            throw IllegalArgumentException("The companion job signature is invalid.", error)
         }
 
         val job = try {
@@ -93,11 +102,15 @@ class SignedJobVerifier(
         .digest(bytes)
         .joinToString("") { byte -> "%02x".format(byte) }
 
-    private fun validKeyId(value: String): Boolean = SHA256.matches(value)
+    private fun validKeyId(value: String): Boolean = KEY_ID.matches(value)
 
     private companion object {
+        val ED25519_SPKI_PREFIX = byteArrayOf(
+            0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+        )
         val PACKAGE_NAME = Regex("^[a-zA-Z][a-zA-Z0-9_]*(\\.[a-zA-Z][a-zA-Z0-9_]*)+$")
         val ID = Regex("^[A-Za-z0-9_-]{16,128}$")
+        val KEY_ID = Regex("^ed25519:[0-9a-f]{24}$")
         val SHA256 = Regex("^[0-9a-f]{64}$")
         val MAX_CLOCK_SKEW: Duration = Duration.ofMinutes(5)
         val MAX_JOB_LIFETIME: Duration = Duration.ofHours(1)

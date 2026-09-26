@@ -2,19 +2,20 @@ diff --git a/plugin/src/main/kotlin/com/thelightphone/plugin/LightSdkPlugin.kt b
 index 594de64443f63cbbbe0d7582e9cd9160d7925f0f..dbf2edd2a644f3af65fecce16980df3ecd63377f 100644
 --- a/plugin/src/main/kotlin/com/thelightphone/plugin/LightSdkPlugin.kt
 +++ b/plugin/src/main/kotlin/com/thelightphone/plugin/LightSdkPlugin.kt
-@@ -16,6 +16,11 @@ class LightSdkPlugin : Plugin<Project> {
+@@ -16,6 +16,12 @@ class LightSdkPlugin : Plugin<Project> {
  
          val SDK_DEPENDENCIES = SDK_MODULES.mapTo(mutableSetOf()) { "com.thelightphone:$it" }
  
 +        val EXACT_ALLOWED_DEPENDENCIES = setOf(
 +            "com.auroraoss:gplayapi:3.6.4",
 +            "com.google.protobuf:protobuf-java:4.34.1",
++            "com.google.crypto.tink:tink:1.20.0",
 +        )
 +
          private val PREFIX_ALLOWED_DEPENDENCIES = setOf(
              "org.jetbrains.kotlin:kotlin-stdlib",
              "org.jetbrains.kotlin:kotlin-test",
-@@ -46,7 +51,8 @@ class LightSdkPlugin : Plugin<Project> {
+@@ -46,7 +52,8 @@ class LightSdkPlugin : Plugin<Project> {
              "org.sol4k:utilities",
          )
  
@@ -24,7 +25,7 @@ index 594de64443f63cbbbe0d7582e9cd9160d7925f0f..dbf2edd2a644f3af65fecce16980df3e
  
          val ALLOWED_PLUGINS = setOf(
              "com.android.application",
-@@ -399,9 +405,10 @@ class LightSdkPlugin : Plugin<Project> {
+@@ -399,9 +406,10 @@ class LightSdkPlugin : Plugin<Project> {
       */
      private fun isKspConfig(name: String): Boolean = name.startsWith("ksp")
  
@@ -36,7 +37,7 @@ index 594de64443f63cbbbe0d7582e9cd9160d7925f0f..dbf2edd2a644f3af65fecce16980df3e
              PREFIX_ALLOWED_DEPENDENCIES.any { coordinate.startsWith(it) }
      }
  
-@@ -453,7 +460,7 @@ class LightSdkPlugin : Plugin<Project> {
+@@ -453,7 +461,7 @@ class LightSdkPlugin : Plugin<Project> {
                              violations.add("  ${config.name}: ${group}:${dep.name}:${dep.version ?: "?"} (KSP processor not allowed)")
                          }
                      } else {
@@ -45,7 +46,7 @@ index 594de64443f63cbbbe0d7582e9cd9160d7925f0f..dbf2edd2a644f3af65fecce16980df3e
                              violations.add("  ${config.name}: ${group}:${dep.name}:${dep.version ?: "?"}")
                          }
                      }
-@@ -484,8 +491,9 @@ class LightSdkPlugin : Plugin<Project> {
+@@ -484,8 +492,9 @@ class LightSdkPlugin : Plugin<Project> {
                  }
  
                  val isKsp = isKspConfig(config.name)
@@ -57,7 +58,7 @@ index 594de64443f63cbbbe0d7582e9cd9160d7925f0f..dbf2edd2a644f3af65fecce16980df3e
  
                  // Collect coordinates that are transitives of allowed first-level deps.
                  // Only trust transitives of allowed module deps — not project deps,
-@@ -502,7 +510,7 @@ class LightSdkPlugin : Plugin<Project> {
+@@ -502,7 +511,7 @@ class LightSdkPlugin : Plugin<Project> {
  
                  resolved.forEach { dep ->
                      if (isProjectDependency(dep, project)) return@forEach
@@ -66,7 +67,7 @@ index 594de64443f63cbbbe0d7582e9cd9160d7925f0f..dbf2edd2a644f3af65fecce16980df3e
                          collectTransitives(dep)
                      }
                  }
-@@ -513,7 +521,7 @@ class LightSdkPlugin : Plugin<Project> {
+@@ -513,7 +522,7 @@ class LightSdkPlugin : Plugin<Project> {
                      val resolvedCoord = "${dep.moduleGroup}:${dep.moduleName}"
  
                      if (resolvedCoord in allowedTransitives) return@forEach
@@ -136,7 +137,7 @@ diff --git a/plugin/src/test/kotlin/com/thelightphone/plugin/LightSdkPluginValid
 index b3ab6c0cb5db0c761c96f7d6bc2a7965f13ca841..f493c590b38a5b63103355b0b14219d377021cc4 100644
 --- a/plugin/src/test/kotlin/com/thelightphone/plugin/LightSdkPluginValidationTest.kt
 +++ b/plugin/src/test/kotlin/com/thelightphone/plugin/LightSdkPluginValidationTest.kt
-@@ -373,6 +373,28 @@ class LightSdkPluginValidationTest {
+@@ -373,6 +373,39 @@ class LightSdkPluginValidationTest {
          assertFalse(LightSdkPlugin().isAllowed("com.thelightphone", "client-untrusted"))
      }
  
@@ -160,6 +161,17 @@ index b3ab6c0cb5db0c761c96f7d6bc2a7965f13ca841..f493c590b38a5b63103355b0b14219d3
 +        assertTrue(LightSdkPlugin().isAllowed("com.google.protobuf", "protobuf-java", "4.34.1"))
 +        assertFalse(LightSdkPlugin().isAllowed("com.google.protobuf", "protobuf-java", "4.34.2"))
 +        assertFalse(LightSdkPlugin().isAllowed("com.google.protobuf", "protobuf-javalite", "4.34.1"))
++    }
++
++    @Test
++    fun `tink signature verifier is allowed only at its pinned coordinate`() {
++        assertTrue(LightSdkPlugin().isAllowed("com.google.crypto.tink", "tink", "1.20.0"))
++        assertFalse(LightSdkPlugin().isAllowed("com.google.crypto.tink", "tink", "1.20.1"))
++        assertFalse(LightSdkPlugin().isAllowed("com.google.crypto.tink", "tink", "1.19.0"))
++        assertFalse(LightSdkPlugin().isAllowed("com.google.crypto.tink", "tink", "1.+"))
++        assertFalse(LightSdkPlugin().isAllowed("com.google.crypto.tink", "tink"))
++        assertFalse(LightSdkPlugin().isAllowed("com.google.crypto.tink", "tink-untrusted", "1.20.0"))
++        assertFalse(LightSdkPlugin().isAllowed("com.google.crypto.tink.untrusted", "tink", "1.20.0"))
 +    }
 +
      // ---------------------------------------------------------------------

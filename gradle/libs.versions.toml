@@ -5,11 +5,13 @@ ksp = "2.3.6"
 sdk = "0.1.1"
 gplayapi = "3.6.4"
 protobuf = "4.34.1"
+tink = "1.20.0"
 
 [libraries]
 sdk-client = { module = "com.thelightphone:client", version.ref = "sdk" }
 gplayapi = { module = "com.auroraoss:gplayapi", version.ref = "gplayapi" }
 protobuf-java = { module = "com.google.protobuf:protobuf-java", version.ref = "protobuf" }
+tink = { module = "com.google.crypto.tink:tink", version.ref = "tink" }
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version = "1.10.2" }
 

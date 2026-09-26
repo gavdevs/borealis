@@ -164,6 +164,8 @@ dependencies {
     // The Light SDK push connector already uses the full runtime; this direct,
     // pinned dependency aligns its version so only one implementation is packaged.
     implementation(libs.protobuf.java)
+    // LP3 cannot import Ed25519 keys through JCA; verify jobs with Tink directly.
+    implementation(libs.tink)
     testImplementation(libs.kotlin.test)
     testImplementation(libs.kotlinx.coroutines.test)
 }

@@ -27,6 +27,8 @@ tool = tomllib.loads((ROOT / 'app/lighttool.toml').read_text())['tool']
 catalog = tomllib.loads((ROOT / 'gradle/libs.versions.toml').read_text())
 if catalog['versions']['gplayapi'] != '3.6.4':
     raise SystemExit('Update and verify the GPlayAPI source pin when changing its dependency version.')
+if catalog['versions']['tink'] != '1.20.0':
+    raise SystemExit('Update the Tink policy, license notices, and provenance pin together.')
 
 
 def git(repo, *args):
@@ -70,6 +72,7 @@ subprocess.run(['git', 'archive', '--format=tar.gz', '--prefix=borealis/', f'--o
 subprocess.run(['git', 'archive', '--format=tar.gz', '--prefix=light-sdk/', f'--output={output / "light-sdk-base-source.tar.gz"}', SDK_REVISION], cwd=sdk, check=True)
 shutil.copyfile(ROOT / 'patches/light-sdk-borealis.patch', output / 'light-sdk-borealis.patch')
 shutil.copyfile(ROOT / 'patches/LICENSE.light-sdk', output / 'LICENSE.light-sdk')
+shutil.copyfile(ROOT / 'licenses/LICENSE.tink', output / 'LICENSE.tink')
 shutil.copyfile(ROOT / 'LICENSE', output / 'LICENSE')
 shutil.copyfile(ROOT / 'THIRD_PARTY_NOTICES.md', output / 'THIRD_PARTY_NOTICES.md')
 shutil.copyfile(ROOT / 'docs/releases.md', output / 'BUILD-INSTRUCTIONS.md')
@@ -96,12 +99,13 @@ with dependencies.open() as stream:
     dependency_rows = list(manifest)
 required_coordinates = {
     'com.auroraoss:gplayapi:3.6.4',
+    'com.google.crypto.tink:tink:1.20.0',
     'project:light-sdk:sdk:client',
     'project:light-sdk:sdk:shared',
     'project:light-sdk:sdk:ui',
 }
 if not required_coordinates <= {row['coordinate'] for row in dependency_rows}:
-    raise SystemExit('Dependency provenance is missing required Play client or Light SDK artifacts.')
+    raise SystemExit('Dependency provenance is missing required Play client, Tink, or Light SDK artifacts.')
 if not all(row['artifact'] and re.fullmatch(r'[0-9a-f]{64}', row['sha256'] or '') for row in dependency_rows):
     raise SystemExit('Dependency provenance contains an invalid artifact hash.')
 provenance = {
@@ -119,6 +123,8 @@ provenance = {
             'patchSha256': sha256(output / 'light-sdk-borealis.patch')},
     'gplayapi': {'coordinate': 'com.auroraoss:gplayapi:3.6.4', 'commit': GPLAY_REVISION,
                  'sourceUrl': source_url, 'sourceSha256': sha256(gplay_archive)},
+    'tink': {'coordinate': 'com.google.crypto.tink:tink:1.20.0', 'license': 'Apache-2.0',
+             'sourceUrl': 'https://github.com/tink-crypto/tink-java/tree/v1.20.0'},
     'toolchain': {'java': 'Temurin 17', 'gradle': '9.0.0', 'androidCompileSdk': 36, 'apkVerificationBuildTools': '36.0.0'},
     'workflowRun': f"https://github.com/{os.environ.get('GITHUB_REPOSITORY', 'gavdevs/borealis')}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}",
 }

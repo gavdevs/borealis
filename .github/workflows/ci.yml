@@ -47,13 +47,19 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-android
+      - name: Verify the experimental SDK dependency policy
+        run: >-
+          ./gradlew --no-daemon --max-workers=1
+          -Pborealis.sdkPath=.ci/light-sdk
+          :light-sdk:plugin:test
+          --tests com.thelightphone.plugin.LightSdkPluginValidationTest
       - name: Unit tests, debug APK, and dependency provenance
         run: >-
           ./gradlew --no-daemon --max-workers=1
           -Pborealis.sdkPath=.ci/light-sdk
           --init-script scripts/release-provenance.init.gradle.kts
           :app:testDebugUnitTest :app:assembleDebug :app:writeDebugDependencyProvenance
-      - name: Verify dependency provenance contains the Play client
+      - name: Verify dependency provenance contains the Play client and Tink verifier
         shell: bash
         run: |
           python3 - <<'PY'
@@ -64,6 +70,7 @@ jobs:
           with manifest.open() as stream:
               rows = list(csv.DictReader(stream, delimiter='\t'))
           assert any(row['coordinate'] == 'com.auroraoss:gplayapi:3.6.4' for row in rows)
+          assert any(row['coordinate'] == 'com.google.crypto.tink:tink:1.20.0' for row in rows)
           sdk_rows = {row['coordinate'] for row in rows if row['coordinate'].startswith('project')}
           assert {'project:light-sdk:sdk:client', 'project:light-sdk:sdk:shared',
                   'project:light-sdk:sdk:ui'} <= sdk_rows, f'Missing SDK artifacts; found {sorted(sdk_rows)}'
