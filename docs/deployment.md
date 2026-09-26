@@ -1,5 +1,8 @@
 # Hosted companion
 
+Operator runbook for Gav's centrally hosted Borealis service. Members only sign
+up, sign in, and pair their phones; they do not deploy or administer a server.
+
 Production origin: **https://borealis.loosewire.dev**. One Cloudflare Worker,
 `borealis-companion`, serves the existing React/Vite assets and Hono API.
 Turso remains the database; this deployment does not introduce D1 or proxy APKs.
@@ -78,7 +81,7 @@ See [build configuration](https://developers.cloudflare.com/workers/ci-cd/builds
 
 In the Worker's **Settings → Variables & Secrets**, add these values as **secrets**:
 
-- `BOREALIS_ADMIN_TOKEN`: preserve the existing private owner-setup token. A
+- `BOREALIS_ADMIN_TOKEN`: preserve the existing private operator-provisioning token. A
   domain-separated HMAC of it supplies Better Auth's cookie-signing secret;
   there is no additional auth secret to configure.
 - `TURSO_DATABASE_URL`: the existing Borealis database URL.
@@ -148,7 +151,7 @@ password changes, and new domain rows contain only `better-auth-managed` instead
 of a password hash. Do not treat switching back to the old auth code as a safe
 password/session rollback; coordinate recovery before doing so.
 
-## Verification and owner setup
+## Verification and private curator provisioning
 
 After deployment or a relevant authentication change, run these from `companion/`:
 
@@ -166,15 +169,37 @@ password changes, and session revocation through the real HTTPS endpoint.
 Its `finally` cleanup resolves only its random fixture usernames and bearer
 digest, then explicitly removes their Better Auth users, sessions, credentials,
 and domain child rows without relying on foreign-key cascades. It never claims
-owner setup or edits the shared catalog. A cleanup failure is reported separately.
+curator provisioning or edits the shared catalog. A cleanup failure is reported separately.
 This verifies newly created accounts, not legacy-password compatibility or Android
 installation; verify those paths separately.
 
-On the production sign-in screen, use **Set up this server** once with the
-existing private setup token and your chosen username/password. Public signup
-creates members, never the curator. Without email, forgotten-password recovery
-is not currently self-service. Existing catalog entries still need reviewed
-publisher pins before automatic approval of their signers.
+The signup form also has an optional, API-intercepted browser regression check.
+With Python Playwright and its Chromium browser already installed, run:
+
+```sh
+python scripts/check-auth-form.py https://borealis.loosewire.dev
+```
+
+This verifies the 12-character minimum, ordinary 12/16-character submissions,
+silent password-manager autofill, and hosted-only account UI without creating
+accounts. New passwords use a shared 12–128 Unicode-code-point policy; existing
+shorter passwords still work for signin. The live read-only checks and browser
+check passed after this update. The complete hosted write-smoke rerun hit the
+production signup cooldown; its temporary records were cleaned, and no rate limit
+was disabled. Run it again after the cooldown before treating the new 12-character
+policy as fully verified through production signup.
+
+The public companion offers signup and signin, not server setup. Curator
+provisioning is private operator work through the existing protected one-time
+`POST /api/borealis/v1/auth/bootstrap` endpoint, using `BOREALIS_ADMIN_TOKEN` and
+a new username/password. Its token checks, request guards, rate limits, and
+atomic owner claim remain in place. Never share the token with members or remove
+the `bootstrap_claimed` guard. Public signup creates members, never curators,
+even for the first account.
+
+Without email, forgotten-password recovery is not currently self-service.
+Existing catalog entries still need reviewed publisher pins before automatic
+approval of their signers.
 
 ## Operational boundaries
 
@@ -183,7 +208,7 @@ publisher pins before automatic approval of their signers.
 - The initial local database credential expires on **2026-12-25**. Renew the
   database-scoped credential and update the Worker runtime secret before
   expiry. Do not revoke a still-used credential prematurely.
-- Preserve the owner-setup secret: it also derives Better Auth's signing secret
+- Preserve the private operator secret: it also derives Better Auth's signing secret
   and salts rate-limit bucket identifiers. Do not store it in the browser.
 - Cloudflare supplies client identity at the trusted Worker boundary. The Node
   preview uses socket peers; arbitrary forwarded headers are not trusted there.

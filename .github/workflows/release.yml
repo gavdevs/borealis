@@ -22,7 +22,6 @@ jobs:
     if: github.repository == 'gavdevs/borealis'
     runs-on: ubuntu-24.04
     timeout-minutes: 50
-    environment: android-release
     permissions:
       contents: write
     env:
@@ -94,6 +93,7 @@ jobs:
           gh release create "$RELEASE_TAG" release-output/* --verify-tag --draft \
             --title "Borealis $RELEASE_TAG" --notes-file release-output/RELEASE-NOTES.md
       - name: Retain packaged release artifacts for troubleshooting
+        if: ${{ !cancelled() && hashFiles('release-output/SHA256SUMS') != '' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: borealis-${{ steps.metadata.outputs.tag }}

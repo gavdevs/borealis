@@ -89,6 +89,55 @@ describe('username and password accounts', () => {
     expect((await request('/auth/signup', { username: 'new_user', password: PASSWORD, email: 'not@stored.test' })).status).toBe(400)
   })
 
+  it.each([
+    { length: 11, status: 400 },
+    { length: 12, status: 201 },
+    { length: 16, status: 201 },
+  ])('returns $status for signup with a $length-character password', async ({ length, status }) => {
+    const password = 'a'.repeat(length)
+    const signup = await request('/auth/signup', { username: 'boundary_user', password })
+    expect(signup.status).toBe(status)
+    if (status === 400) {
+      expect(await signup.json()).toEqual({ error: 'Use a password or passphrase with 12–128 characters (received 11).' })
+      expect((await database.client.execute('SELECT COUNT(*) AS count FROM ba_user')).rows[0]!.count).toBe(0)
+    } else {
+      expect(await (await request('/auth/session', undefined, cookie(signup))).json()).toMatchObject({ account: { username: 'boundary_user' } })
+      expect((await request('/auth/signin', { username: 'boundary_user', password })).status).toBe(200)
+    }
+  })
+
+  it('uses the same 12-character minimum when changing passwords', async () => {
+    const session = cookie(await request('/auth/signup', { username: 'member', password: PASSWORD }))
+    const short = await request('/auth/change-password', { currentPassword: PASSWORD, newPassword: 'a'.repeat(11) }, session)
+    expect(short.status).toBe(400)
+    expect(await short.json()).toEqual({ error: 'Use a password or passphrase with 12–128 characters (received 11).' })
+    expect(await (await request('/auth/session', undefined, session)).json()).toMatchObject({ account: { username: 'member' } })
+
+    const newPassword = 'a'.repeat(12)
+    const changed = await request('/auth/change-password', { currentPassword: PASSWORD, newPassword }, session)
+    expect(changed.status).toBe(200)
+    expect(await (await request('/auth/session', undefined, cookie(changed))).json()).toMatchObject({ account: { username: 'member' } })
+    expect((await request('/auth/signin', { username: 'member', password: PASSWORD })).status).toBe(401)
+    expect((await request('/auth/signin', { username: 'member', password: newPassword })).status).toBe(200)
+  })
+
+  it('does not apply the new-password minimum to an existing legacy password during sign-in or password change', async () => {
+    const password = 'short7!'
+    await database.createAccount({
+      id: 'legacy-short-password', username: 'legacy_short', passwordHash: await hashLegacyPassword(password),
+      createdAt: now.toISOString(), sessionDigest: 'legacy-short-session-digest',
+      sessionExpiresAt: new Date(Date.now() + 86400_000).toISOString(),
+    })
+    await database.migrate()
+    const signin = await request('/auth/signin', { username: 'legacy_short', password })
+    expect(signin.status).toBe(200)
+    expect(await signin.json()).toMatchObject({ account: { id: 'legacy-short-password', username: 'legacy_short' } })
+    const newPassword = 'a'.repeat(12)
+    const changed = await request('/auth/change-password', { currentPassword: password, newPassword }, cookie(signin))
+    expect(changed.status).toBe(200)
+    expect((await request('/auth/signin', { username: 'legacy_short', password: newPassword })).status).toBe(200)
+  })
+
   it('returns the same credential failure for wrong passwords and unknown usernames', async () => {
     await request('/auth/signup', { username: 'member', password: PASSWORD })
     const wrong = await request('/auth/signin', { username: 'member', password: 'wrong password value' })

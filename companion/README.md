@@ -1,8 +1,9 @@
 # Borealis companion
 
-Borealis is a positive-allowlist control plane for the Borealis Light
-Phone installer. Search and policy live here; the phone receives only explicit,
-short-lived install jobs for packages assigned to that device.
+Borealis is Gav's centrally hosted companion for the Borealis Light Phone
+installer. Members create an account, sign in, and pair their own phones; they
+do not configure a server or need an admin token. Search and policy live here;
+the phone receives only explicit, short-lived install jobs for assigned packages.
 
 This service never proxies APK bytes and never accepts or stores Google account
 credentials. Catalog search reads public Google Play web metadata. The phone is
@@ -36,12 +37,15 @@ app collection and paired phones. A shared, curator-managed positive allowlist
 controls which packages can enter those collections; a public signup cannot
 approve arbitrary packages or edit publisher signing pins.
 
-This is the foundation for one shared hosted service. The Cloudflare Worker
-adapter and deployment pipeline target `https://borealis.loosewire.dev` with
+The shared service is hosted at `https://borealis.loosewire.dev`. Its Cloudflare
+Worker adapter and deployment pipeline provide
 edge throttling and persistent account limits. See the [deployment runbook](../docs/deployment.md)
-for setup and verification; the full app-admission workflow remains unfinished.
+for operator deployment and verification; the full app-admission workflow remains unfinished.
 
 ## Run locally
+
+These instructions are for repository contributors running a local development
+instance, not a setup step for people using the hosted companion.
 
 Requirements: Node.js 22.12 or newer and pnpm 11.
 
@@ -79,7 +83,7 @@ stored.
 ## Accounts
 
 - **Create account:** choose a username (3–32 letters, digits, or underscores,
-  case-insensitive) and a 15–128-character password/passphrase. No email,
+  case-insensitive) and a 12–128-character password/passphrase. No email,
   confirmation email, recovery code, or third-party identity service is required.
 - **Sign in:** use that username and password. Better Auth 1.7.6 owns password
   hashing, verification, and browser sessions. New passwords use its maintained
@@ -91,14 +95,9 @@ stored.
 - **Recovery:** there is no self-service forgotten-password reset. Save the
   password in a password manager; having a session alone does not bypass the
   current-password requirement. Recovery needs a separately designed mechanism.
-- **Server owner:** use the one-time owner setup on the sign-in screen with the
-  existing `BOREALIS_ADMIN_TOKEN`, plus a new username/password. Better Auth
-  identity and domain member creation happen first; the subsequent owner claim
-  atomically promotes that account to curator and claims legacy unowned phones
-  and existing app selections.
-  Ordinary signup never claims legacy data, even if it is the first account.
-  After setup, the token cannot be used as an API bearer or to create another
-  curator. Do not delete the `bootstrap_claimed` metadata record.
+- **Pair a phone:** sign in, enter the short-lived code shown by the phone app,
+  review the requesting phone, and approve it. Public signup always creates a
+  member account, including the first signup; it never grants curator privileges.
 
 Better Auth's required email-shaped field uses the internal, non-deliverable
 alias `username@users.borealis.invalid`. The UI never asks for an email, no email
@@ -119,9 +118,9 @@ The cookie-signing secret is a domain-separated HMAC derived from the stable
 `BOREALIS_ADMIN_TOKEN`; no additional secret is needed. Rotating that token
 invalidates browser cookies and changes rate-limit bucket keys, but leaves
 password hashes, account ownership, phone credentials, and signing keys intact.
-Keep the database backups and owner-setup token private.
+Keep the database backups and operator token private.
 
-Signup, login, setup, password changes, and pairing-code attempts have persistent
+Signup, login, private curator provisioning, password changes, and pairing-code attempts have persistent
 database-backed limits; login is also limited by normalized username. The Node
 adapter uses the actual socket peer, not caller-supplied forwarding headers.
 The Cloudflare adapter uses the platform's `CF-Connecting-IP` and an edge limiter
@@ -132,6 +131,17 @@ See [Better Auth security](https://better-auth.com/docs/reference/security),
 [OWASP password-storage guidance](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html),
 and [session guidance](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html).
 A production security audit has not been completed.
+
+## Private curator provisioning
+
+Curator provisioning belongs to the service operator, not the public login UI.
+The existing one-time `POST /api/borealis/v1/auth/bootstrap` endpoint requires
+the private `BOREALIS_ADMIN_TOKEN` plus a new username/password. Better Auth
+identity and domain member creation happen first; the subsequent owner claim
+atomically promotes that account and claims legacy unowned phones and app selections.
+The endpoint remains protected by its existing token, request guards, and rate limits.
+After provisioning, the token cannot create another curator or act as an API bearer.
+Do not delete the `bootstrap_claimed` metadata record or share the token with users.
 
 ## Turso database
 
@@ -286,11 +296,10 @@ Paths below are relative to `/api/borealis/v1`. Browser authentication uses the
 session cookie, not the old admin bearer. Mutation requests also send
 `X-Borealis-Request: 1` and `Content-Type: application/json` for JSON bodies.
 
-- `GET /auth/session` → account summary or `null`, plus setup availability.
+- `GET /auth/session` → account summary or `null`.
 - `POST /auth/signup` and `/auth/signin` → `{username,password}`.
 - `POST /auth/signout` → `{}`; revokes the current session.
 - `POST /auth/change-password` → `{currentPassword,newPassword}`.
-- `POST /auth/bootstrap` → `{adminToken,username,password}`; one time only.
 - `GET|POST /me/apps`; POST selects `{packageName}` from the approved catalog.
 - `DELETE /me/apps/:packageName`; affects only this account and its phones.
 - `GET /me/pairings`; lists only this account's claimed, non-activated pairings.
@@ -303,6 +312,9 @@ session cookie, not the old admin bearer. Mutation requests also send
 - `GET|POST /me/devices/:deviceId/jobs`
 - Curators only: `GET|POST /admin/allowlist` and
   `GET|PUT|DELETE /admin/allowlist/:packageName`.
+
+`POST /auth/bootstrap` is reserved for the private operator provisioning described
+above; it is not part of the member signup or login workflow.
 
 `GET /catalog/search` requires sign-in. Members search only the approved
 catalog; curators can search public Play metadata to review and add packages.

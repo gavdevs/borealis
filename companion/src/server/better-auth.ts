@@ -6,6 +6,7 @@ import { username } from 'better-auth/plugins/username'
 import type { BorealisConfig } from './config.js'
 import type { BorealisDatabase } from './db.js'
 import { verifyPassword as verifyLegacyPassword, type PasswordRuntime } from './passwords.js'
+import { PASSWORD_MIN_LENGTH, PASSWORD_MAX_CODE_UNITS } from '../shared/password-policy.js'
 
 export const AUTH_BASE_PATH = '/api/borealis/v1/auth'
 
@@ -45,8 +46,8 @@ export function createAccountAuth(config: BorealisConfig, database: BorealisData
     },
     emailAndPassword: {
       enabled: true,
-      minPasswordLength: 15,
-      maxPasswordLength: 256,
+      minPasswordLength: PASSWORD_MIN_LENGTH,
+      maxPasswordLength: PASSWORD_MAX_CODE_UNITS,
       password: {
         hash: hashPassword,
         // Existing accounts keep their original salted hashes. New passwords

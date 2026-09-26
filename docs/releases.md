@@ -13,12 +13,14 @@ approval. The repository and its GitHub releases remain private.
 - `Cloudflare Workers Builds`: the companion's native GitHub connection, not a
   GitHub Actions deployment. Once connected, `main` pushes run companion tests,
   build, Worker checks, and deployment on Cloudflare. Preview builds are disabled;
-  Turso migrations remain deliberate/manual. Setup is prepared, but the Worker
-  is not yet live or connected. See [deployment.md](deployment.md).
+  Turso migrations remain deliberate/manual. The Worker is live on Workers Free
+  and passed hosted HTTPS checks on 2026-09-26 following a Wrangler deployment.
+  The native GitHub connection remains unverified. See [deployment.md](deployment.md).
 - `Draft Android release`: a `vX.Y.Z` tag push, or a manual run naming an existing
   tag. The tag must match `app/lighttool.toml` and refer to a commit on `main`.
-  Produces a **draft**, never an automatically published release. Uses GitHub
-  environment `android-release`; configure its reviewers before widening access.
+  Produces a **draft**, never an automatically published release. Uses repository
+  signing secrets; no GitHub environment or paid deployment-protection feature
+  is required. Review the draft before publishing it.
 
 External GitHub actions are pinned to full commit SHAs verified against upstream release
 tags. Checkout does not persist repository credentials. Pull requests never receive
@@ -27,8 +29,7 @@ builds; Cloudflare handles companion deployment builds.
 
 ## Signing identity
 
-Configure these five GitHub Actions secrets (repository-level or in the
-`android-release` environment):
+The workflow uses these five repository-level GitHub Actions secrets:
 
 | Secret | Value |
 | --- | --- |
@@ -57,11 +58,28 @@ app state. See [Android's signing guidance](https://developer.android.com/studio
 
 ## Create a draft
 
-1. Review changes and obtain a passing CI run on `main`.
-2. In `app/lighttool.toml`, set the desired semantic `versionName` and a strictly
-   increasing `versionCode`, commit, and push to `main`.
-3. Create and push an immutable tag matching `v<versionName>`; alternatively,
-   manually run `Draft Android release` for that existing tag.
+1. Review and commit the intended release changes on `main`. The initial release
+   uses the existing `versionName = "0.1.0"` and `versionCode = 1` in
+   `app/lighttool.toml`; no version bump is needed before its first draft.
+   For each later release, update the semantic version and strictly increase
+   `versionCode` before committing.
+2. Push `main` and wait for CI to pass on that exact commit. The release workflow
+   checks main-branch ancestry but does not itself require a successful CI run.
+3. Create and push an immutable tag matching `v<versionName>` at the checked
+   commit. For the first draft, after confirming `HEAD` is that commit:
+
+   ```sh
+   git tag -a v0.1.0 -m "Borealis v0.1.0"
+   git push origin refs/tags/v0.1.0
+   ```
+
+   The tag push starts `Draft Android release` on GitHub-hosted runners. A manual
+   run can retry the same existing tag if no release for it exists:
+
+   ```sh
+   gh workflow run release.yml --ref main -f tag=v0.1.0
+   ```
+
 4. Review the resulting private draft and verify the APK on a physical Light Phone.
    Build/test success alone does not establish package installation or banking-app
    compatibility on the phone.

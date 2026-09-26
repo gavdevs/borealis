@@ -9,8 +9,10 @@ const base = new URL(process.argv[3] ?? 'https://borealis.loosewire.dev').origin
 if (!base.startsWith('https://') && !base.startsWith('http://127.0.0.1:')) throw new Error('Use HTTPS, or a loopback runtime.')
 if (!process.env.TURSO_DATABASE_URL || !process.env.TURSO_AUTH_TOKEN) throw new Error('Supply the matching Turso database credentials privately.')
 const client = createClient({ url: process.env.TURSO_DATABASE_URL, authToken: process.env.TURSO_AUTH_TOKEN })
-const password = randomBytes(24).toString('base64url')
-const replacement = randomBytes(24).toString('base64url')
+// Exercise the reported 16-character signup case, not just long passphrases.
+const password = randomBytes(12).toString('base64url')
+const minimumPassword = randomBytes(9).toString('base64url')
+const replacement = randomBytes(9).toString('base64url')
 const usernames = ['a', 'b'].map(part => `smoke_${part}_${randomBytes(8).toString('hex')}`)
 const deviceBearer = `brl_device_${randomBytes(32).toString('base64url')}`
 const digest = createHash('sha256').update(deviceBearer).digest('hex')
@@ -122,7 +124,7 @@ try {
   stage = 'signup and secure cookies in the hosted runtime'
   const alice = await request('/auth/signup', 201, { method: 'POST', body: { username: usernames[0], password } })
   createdAccountIds.add(alice.body.account.id)
-  const bob = await request('/auth/signup', 201, { method: 'POST', body: { username: usernames[1], password } })
+  const bob = await request('/auth/signup', 201, { method: 'POST', body: { username: usernames[1], password: minimumPassword } })
   createdAccountIds.add(bob.body.account.id)
   assert.equal(alice.body.account.role, 'member')
   assert.equal(bob.body.account.role, 'member')

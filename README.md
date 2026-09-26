@@ -7,17 +7,24 @@ This is not a Light Tool Library project and is not affiliated with Light, Auror
 ## Repository layout
 
 - `app/` — the Light SDK phone agent (`com.gav.borealis`)
-- `companion/` — the local-first search, allowlist, pairing, and job service
+- `companion/` — the hosted web companion, allowlist, pairing, and job service
 - `docs/` — trust model, protocol, and local-development notes
 - `patches/` — pinned Light SDK installer changes and SDK license notice
 
 The app consumes a custom SDK fork (by default `../light-sdk`). That fork adds the narrow `package-install-request` capability required for Android `PackageInstaller` sessions. Follow [the pinned SDK setup](patches/README.md) for a fresh checkout; an unmodified upstream SDK is not sufficient.
 
-## Running the prototype
+## Using Borealis
 
-- **Web companion:** see [companion/README.md](companion/README.md) for Node.js,
+Borealis is Gav's centrally hosted service at [borealis.loosewire.dev](https://borealis.loosewire.dev).
+Create an account, sign in, and pair your phone. Users do not configure a server
+or need an admin token; curator provisioning is private operator work.
+
+## Development and operations
+
+- **Companion development:** see [companion/README.md](companion/README.md) for Node.js,
   pnpm, configuration, and local startup. Copy the example environment file and
-  supply a private owner-setup token. Users sign up with a username and password,
+  supply a private token for the contributor's local instance. Users of the
+  hosted service sign up with a username and password,
   without email. Better Auth 1.7.6 manages password authentication and sessions;
   its internal `username@users.borealis.invalid` aliases are never emailed.
   Keep the database and signing material private.
@@ -67,7 +74,7 @@ were cleaned. Legacy-password production signin, native GitHub build connection,
 and physical LP3 installation remain unverified. See the
 [deployment runbook](docs/deployment.md) for session-secret handling and remaining checks.
 
-The planned product is a shared hosted service where each person logs in and
+Borealis is one shared hosted service where each person logs in and
 pairs their own phones. Turso is the chosen hosted SQLite provider (replacing
 the earlier D1 proposal). The companion supports a Turso/libSQL connection.
 The Worker adapter, edge rate limits, and release automation are separate from

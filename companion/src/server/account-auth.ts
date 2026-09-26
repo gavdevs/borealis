@@ -9,13 +9,14 @@ import type { BorealisDatabase } from './db.js'
 import { secureStringEqual, sha256Hex } from './crypto.js'
 import { PasswordBusyError, type PasswordRuntime } from './passwords.js'
 import { AUTH_BASE_PATH, createAccountAuth, internalAuthEmail } from './better-auth.js'
+import { PASSWORD_MAX_CODE_UNITS, passwordValidationError } from '../shared/password-policy.js'
 
 const API = '/api/borealis/v1'
 const usernameSchema = z.string().trim().toLowerCase().regex(/^[a-z0-9_]{3,32}$/, 'Use 3–32 letters, numbers, or underscores for your username.')
-const passwordSchema = z.string().max(256).refine((value) => {
-  const length = Array.from(value).length
-  return length >= 15 && length <= 128
-}, 'Use a password or passphrase with 15–128 characters.')
+const passwordSchema = z.string().max(PASSWORD_MAX_CODE_UNITS).superRefine((value, context) => {
+  const message = passwordValidationError(value)
+  if (message) context.addIssue({ code: 'custom', message })
+})
 const credentialsSchema = z.object({ username: usernameSchema, password: passwordSchema }).strict()
 const signinSchema = z.object({ username: usernameSchema, password: z.string().min(1).max(256) }).strict()
 const bootstrapSchema = credentialsSchema.extend({ adminToken: z.string().min(1).max(512) })

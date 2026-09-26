@@ -1,6 +1,7 @@
 import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import type { AccountSummary, AllowlistItem, DeviceSummary, JobSummary, PairingSummary, PlaySearchResult } from '../shared/api.js'
 import { ApiError, apiRequest } from './api.js'
+import { PASSWORD_MIN_LENGTH, PASSWORD_MAX_CODE_UNITS, passwordValidationError } from '../shared/password-policy.js'
 
 const LEGACY_TOKEN_KEY = 'borealis.admin-token.v1'
 const THEME_KEY = 'borealis.theme.v1'
@@ -32,7 +33,6 @@ export function App() {
   const [checkingSession, setCheckingSession] = useState(true)
   const [sessionError, setSessionError] = useState('')
   const [sessionCheck, setSessionCheck] = useState(0)
-  const [bootstrapAvailable, setBootstrapAvailable] = useState(false)
   const [authNotice, setAuthNotice] = useState('')
   const [hash, setHash] = useState(() => window.location.hash)
   const [theme, setTheme] = useState<Theme>(() => {
@@ -45,10 +45,10 @@ export function App() {
     let current = true
     saveStorage('sessionStorage', LEGACY_TOKEN_KEY, '')
     setCheckingSession(true); setSessionError('')
-    void apiRequest<{ account: AccountSummary | null; bootstrapAvailable: boolean }>('/auth/session')
+    void apiRequest<{ account: AccountSummary | null }>('/auth/session')
       .then((response) => {
         if (!current) return
-        setAccount(response.account); setBootstrapAvailable(response.bootstrapAvailable)
+        setAccount(response.account)
       })
       .catch((caught) => { if (current) setSessionError(messageFor(caught)) })
       .finally(() => { if (current) setCheckingSession(false) })
@@ -75,7 +75,6 @@ export function App() {
   }, [page, section, account])
   const signedIn = useCallback((response: AccountResponse) => {
     setAccount(response.account); setAuthNotice(''); window.location.hash = '/home'
-    if (response.account.role === 'curator') setBootstrapAvailable(false)
   }, [])
   const lock = useCallback(() => {
     setAccount(null); setAuthNotice('Your session ended. Sign in again to continue.')
@@ -102,19 +101,18 @@ export function App() {
         {checkingSession ? <div className="layout"><p className="status-line" role="status">Opening your companion…</p></div>
           : sessionError ? <div className="auth-layout"><div><h1>Could not open Borealis.</h1><p className="error" role="alert">{sessionError}</p><button className="action" onClick={() => setSessionCheck((current) => current + 1)}>Try again</button></div></div>
             : account ? page === 'profile' ? <Profile account={account} onSignOut={signOut} onLock={lock} /> : <Companion key={account.id} account={account} onLock={lock} page={page} />
-              : <AccountGate onSignIn={signedIn} bootstrapAvailable={bootstrapAvailable} notice={authNotice} />}
+              : <AccountGate onSignIn={signedIn} notice={authNotice} />}
       </main>
       <footer className="footer"><span>Companion for a more intentional phone.</span><span>Borealis · Light Phone III</span></footer>
     </div>
   )
 }
 
-function AccountGate({ onSignIn, bootstrapAvailable, notice }: { onSignIn: (response: AccountResponse) => void; bootstrapAvailable: boolean; notice: string }) {
-  const [mode, setMode] = useState<'signin' | 'signup' | 'bootstrap'>('signin')
+export function AccountGate({ onSignIn, notice }: { onSignIn: (response: AccountResponse) => void; notice: string }) {
+  const [mode, setMode] = useState<'signin' | 'signup'>('signin')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [confirmation, setConfirmation] = useState('')
-  const [adminToken, setAdminToken] = useState('')
   const [error, setError] = useState('')
   const [working, setWorking] = useState('')
   const workingRef = useRef(false)
@@ -125,33 +123,40 @@ function AccountGate({ onSignIn, bootstrapAvailable, notice }: { onSignIn: (resp
     try { await action() } catch (caught) { setError(messageFor(caught)) } finally { workingRef.current = false; setWorking('') }
   }
   function changeMode(next: typeof mode) {
-    setMode(next); setPassword(''); setConfirmation(''); setAdminToken(''); setError('')
+    setMode(next); setPassword(''); setConfirmation(''); setError('')
   }
   async function submit(event: FormEvent) {
     event.preventDefault()
-    if (mode !== 'signin' && password !== confirmation) { setError('The passwords don’t match. Enter the same password in both fields.'); return }
+    // Read the submitted fields themselves, including password-manager autofill
+    // that may not have updated React state. Never trim or log a password.
+    const fields = new FormData(event.currentTarget as HTMLFormElement)
+    const submittedUsername = String(fields.get('username') ?? '')
+    const submittedPassword = String(fields.get('password') ?? '')
+    if (mode === 'signup') {
+      const invalid = passwordValidationError(submittedPassword)
+      if (invalid) { setError(invalid); return }
+      if (submittedPassword !== fields.get('confirm-password')) { setError('The passwords don’t match. Enter the same password in both fields.'); return }
+    }
     await run(mode, async () => {
-      const response = await apiRequest<AccountResponse>(`/auth/${mode}`, { method: 'POST', body: { username: username.trim(), password, ...(mode === 'bootstrap' ? { adminToken } : {}) } })
-      setPassword(''); setConfirmation(''); setAdminToken(''); onSignIn(response)
+      const response = await apiRequest<AccountResponse>(`/auth/${mode}`, { method: 'POST', body: { username: submittedUsername.trim(), password: submittedPassword } })
+      setPassword(''); setConfirmation(''); onSignIn(response)
     })
   }
   const creating = mode !== 'signin'
   return <div className="auth-layout">
     <aside className="intro"><p className="kicker">Borealis companion</p><h1>A little more. Only what you need.</h1><p className="lede">Choose the essential apps for your Light Phone. Search and selection stay here.</p></aside>
-    <section className="auth-panel" aria-labelledby="login-title"><p className="label">{mode === 'bootstrap' ? 'Server owner' : 'Welcome'}</p><h2 id="login-title">{mode === 'bootstrap' ? 'Set up your curator account.' : creating ? 'Create your account.' : 'Sign in to your companion.'}</h2><p className="section-copy">{mode === 'bootstrap' ? 'Keep your existing apps and phones. Choose a username and password to replace your admin token.' : creating ? 'Choose a username and password. No email address needed.' : 'Your apps and connected phones, right where you left them.'}</p>
+    <section className="auth-panel" aria-labelledby="login-title"><p className="label">Welcome</p><h2 id="login-title">{creating ? 'Create your account.' : 'Sign in to your companion.'}</h2><p className="section-copy">{creating ? 'Choose a username and password. No email address needed.' : 'Your apps and connected phones, right where you left them.'}</p>
       {notice ? <p className="notice" role="status">{notice}</p> : null}
       {error ? <p className="error" role="alert">{error}</p> : null}
       <form onSubmit={submit}>
         <label className="field" htmlFor="username"><span>Username</span><input id="username" name="username" autoComplete="username" autoCapitalize="none" spellCheck={false} value={username} onChange={(event) => setUsername(event.target.value)} minLength={3} maxLength={32} pattern="[A-Za-z0-9_]{3,32}" required disabled={Boolean(working)} aria-describedby={creating ? 'username-hint' : undefined} /></label>
         {creating ? <p className="field-hint" id="username-hint">3–32 letters, numbers, or underscores. Capitalization doesn’t matter.</p> : null}
-        <label className="field" htmlFor="password"><span>Password</span><input id="password" name="password" type="password" autoComplete={creating ? 'new-password' : 'current-password'} value={password} onChange={(event) => setPassword(event.target.value)} minLength={creating ? 15 : undefined} maxLength={128} required disabled={Boolean(working)} aria-describedby={creating ? 'password-hint' : undefined} /></label>
-        {creating ? <><p className="field-hint" id="password-hint">At least 15 characters. A few memorable words work well.</p><label className="field" htmlFor="confirm-password"><span>Confirm password</span><input id="confirm-password" name="confirm-password" type="password" autoComplete="new-password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} minLength={15} maxLength={128} required disabled={Boolean(working)} /></label></> : null}
-        {mode === 'bootstrap' ? <label className="field" htmlFor="admin-token"><span>Existing admin token</span><input id="admin-token" type="password" value={adminToken} onChange={(event) => setAdminToken(event.target.value)} autoComplete="off" required disabled={Boolean(working)} /></label> : null}
+        <label className="field" htmlFor="password"><span>Password</span><input id="password" name="password" type="password" autoComplete={creating ? 'new-password' : 'current-password'} value={password} onChange={(event) => setPassword(event.target.value)} minLength={creating ? PASSWORD_MIN_LENGTH : undefined} maxLength={PASSWORD_MAX_CODE_UNITS} required disabled={Boolean(working)} aria-describedby={creating ? 'password-hint' : undefined} /></label>
+        {creating ? <><p className="field-hint" id="password-hint">At least {PASSWORD_MIN_LENGTH} characters. A few memorable words work well.</p><label className="field" htmlFor="confirm-password"><span>Confirm password</span><input id="confirm-password" name="confirm-password" type="password" autoComplete="new-password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} minLength={PASSWORD_MIN_LENGTH} maxLength={PASSWORD_MAX_CODE_UNITS} required disabled={Boolean(working)} /></label></> : null}
         {creating ? <p className="account-warning">Save your username and password somewhere safe. Without an email address, there’s no email password reset.</p> : null}
-        <div className="actions"><button className="action" disabled={Boolean(working) || !username.trim() || !password}>{working ? (creating ? 'Creating account…' : 'Signing in…') : mode === 'bootstrap' ? 'Create curator account' : creating ? 'Create account' : 'Sign in'}</button></div>
+        <div className="actions"><button className="action" disabled={Boolean(working)}>{working ? (creating ? 'Creating account…' : 'Signing in…') : creating ? 'Create account' : 'Sign in'}</button></div>
       </form>
       <div className="auth-create"><p>{creating ? 'Already have an account?' : 'New to Borealis?'}</p><button className="action secondary" disabled={Boolean(working)} onClick={() => changeMode(creating ? 'signin' : 'signup')}>{creating ? 'Back to sign in' : 'Create an account'}</button></div>
-      {bootstrapAvailable && mode !== 'bootstrap' ? <details className="details"><summary>Set up this server</summary><p className="field-hint">For the server owner only. Convert existing admin access to a curator account.</p><div className="actions"><button className="action secondary" disabled={Boolean(working)} onClick={() => changeMode('bootstrap')}>Set up curator account</button></div></details> : null}
     </section>
   </div>
 }
@@ -177,22 +182,27 @@ function Profile({ account, onSignOut, onLock }: { account: AccountSummary; onSi
   }
   async function changePassword(event: FormEvent) {
     event.preventDefault()
-    if (newPassword !== confirmation) { setError('The new passwords don’t match. Enter the same password in both fields.'); return }
+    const fields = new FormData(event.currentTarget as HTMLFormElement)
+    const submittedCurrentPassword = String(fields.get('current-password') ?? '')
+    const submittedNewPassword = String(fields.get('new-password') ?? '')
+    const invalid = passwordValidationError(submittedNewPassword)
+    if (invalid) { setError(invalid); return }
+    if (submittedNewPassword !== fields.get('confirm-new-password')) { setError('The new passwords don’t match. Enter the same password in both fields.'); return }
     await run('password', async () => {
-      await apiRequest<AccountResponse>('/auth/change-password', { method: 'POST', body: { currentPassword, newPassword } })
+      await apiRequest<AccountResponse>('/auth/change-password', { method: 'POST', body: { currentPassword: submittedCurrentPassword, newPassword: submittedNewPassword } })
       closePasswordForm(); setNotice('Password changed. Other browser sessions are signed out. Your phones are still connected.')
     })
   }
   return <div className="layout">
     <aside className="intro"><p className="kicker">Profile</p><h1>A place of your own.</h1><p className="lede">Your account keeps your apps and phones together. No email address needed.</p></aside>
     <div className="workspace">{error ? <p className="error" role="alert">{error}</p> : null}{notice ? <p className="notice" role="status">{notice}</p> : null}
-      <Section id="account" label="Account" title={account.username}><p className="section-copy">Created {formatTime(account.createdAt)}.{account.role === 'curator' ? ' You curate the apps available through this server.' : ' Your apps and phones belong to this account.'}</p></Section>
+      <Section id="account" label="Account" title={account.username}><p className="section-copy">Created {formatTime(account.createdAt)}.{account.role === 'curator' ? ' You curate the apps available through Borealis.' : ' Your apps and phones belong to this account.'}</p></Section>
       <Section id="account-access" label="Access" title="Your password"><p className="section-copy">Keep your username and password somewhere safe. There’s no email password reset.</p>
         {changingPassword ? <form className="password-form" onSubmit={changePassword}>
           <input type="hidden" name="username" autoComplete="username" value={account.username} />
-          <label className="field"><span>Current password</span><input name="current-password" type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} maxLength={128} required disabled={Boolean(busy)} /></label>
-          <label className="field"><span>New password</span><input name="new-password" type="password" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} minLength={15} maxLength={128} required disabled={Boolean(busy)} aria-describedby="new-password-hint" /></label><p className="field-hint" id="new-password-hint">15–128 characters. Spaces are welcome.</p>
-          <label className="field"><span>Confirm new password</span><input name="confirm-new-password" type="password" autoComplete="new-password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} minLength={15} maxLength={128} required disabled={Boolean(busy)} /></label>
+          <label className="field"><span>Current password</span><input name="current-password" type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} maxLength={PASSWORD_MAX_CODE_UNITS} required disabled={Boolean(busy)} /></label>
+          <label className="field"><span>New password</span><input name="new-password" type="password" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} minLength={PASSWORD_MIN_LENGTH} maxLength={PASSWORD_MAX_CODE_UNITS} required disabled={Boolean(busy)} aria-describedby="new-password-hint" /></label><p className="field-hint" id="new-password-hint">{PASSWORD_MIN_LENGTH}–128 characters. Spaces are welcome.</p>
+          <label className="field"><span>Confirm new password</span><input name="confirm-new-password" type="password" autoComplete="new-password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} minLength={PASSWORD_MIN_LENGTH} maxLength={PASSWORD_MAX_CODE_UNITS} required disabled={Boolean(busy)} /></label>
           <p className="account-warning">Changing your password signs out other browsers. Your paired phones stay connected.</p>
           <div className="actions"><button className="action secondary" type="button" disabled={Boolean(busy)} onClick={closePasswordForm}>Cancel</button><button className="action" disabled={Boolean(busy)}>{busy === 'password' ? 'Changing password…' : 'Save new password'}</button></div>
         </form> : <button className="action" disabled={Boolean(busy)} onClick={() => setChangingPassword(true)}>Change password</button>}
@@ -397,7 +407,7 @@ function Companion({ account, onLock, page }: { account: AccountSummary; onLock:
   return <div className="layout">
     <aside className="intro"><p className="kicker">Apps</p><h1>Choose what reaches your phone.</h1><p className="lede">{curator ? 'Choose essential apps for the shared catalog, then select what reaches your own phones.' : 'Find an app in the approved catalog, add it to your collection, then choose which phone receives it.'}</p><dl className="stats"><div><dt>Your apps</dt><dd>{data.allowlist.length} chosen</dd></div><div><dt>Phones</dt><dd>{readyPhones.length} paired</dd></div></dl><nav className="section-index" aria-label="App sections"><a href="#/apps/find">Find</a><a href="#/apps/your-apps">Your apps</a><a href="#/home/activity">Phone activity <span aria-hidden="true">↗</span></a></nav></aside>
     <div className="workspace">{messages}
-      <Section id="find" label="Find" title="Find the app you need."><p className="section-copy">{curator ? 'You’re searching Google Play as a curator. Adding an app also approves it for everyone on this server. Choose only essential apps that belong on a Light Phone.' : 'Search the apps approved for this Borealis server. Your selections stay private, and there’s no store to browse on your phone.'}</p><form onSubmit={search} role="search"><label className="field" htmlFor="catalog-search"><span className="label">Search apps</span><input id="catalog-search" type="search" placeholder="App or publisher name" value={query} onChange={(event) => setQuery(event.target.value)} autoComplete="off" minLength={2} maxLength={120} required /></label><div className="actions"><button className="action" disabled={Boolean(busy) || query.trim().length < 2}>{busy === 'search' ? 'Searching…' : 'Search'}</button></div></form></Section>
+      <Section id="find" label="Find" title="Find the app you need."><p className="section-copy">{curator ? 'You’re searching Google Play as a curator. Adding an app also approves it for everyone using Borealis. Choose only essential apps that belong on a Light Phone.' : 'Search the apps approved for Borealis. Your selections stay private, and there’s no store to browse on your phone.'}</p><form onSubmit={search} role="search"><label className="field" htmlFor="catalog-search"><span className="label">Search apps</span><input id="catalog-search" type="search" placeholder="App or publisher name" value={query} onChange={(event) => setQuery(event.target.value)} autoComplete="off" minLength={2} maxLength={120} required /></label><div className="actions"><button className="action" disabled={Boolean(busy) || query.trim().length < 2}>{busy === 'search' ? 'Searching…' : 'Search'}</button></div></form></Section>
       {searchedQuery !== null ? <Section id="results" label="Results" title={searchedQuery} action={<span className="label">{results.length} found</span>}>
         {!results.length ? <p className="empty">No apps found. Try another name or publisher.</p> : <>
           <div className="actions"><button className="action secondary" disabled={Boolean(busy) || !availableResults.length} onClick={() => setSelectedResults(selectedResults.length === availableResults.length ? [] : availableResults.map((item) => item.packageName))}>{availableResults.length > 0 && selectedResults.length === availableResults.length ? 'Clear selection' : 'Select all'}</button></div>
@@ -442,7 +452,7 @@ function JobRow({ job, busy, canAct, canApprove, onQueue, onApprove }: { job: Jo
   const signer = job.observedSignerSha256[0]
   const retry = ['failed', 'cancelled', 'succeeded'].includes(job.status)
   return <article className="list-row"><div className="row-copy"><h3 className="row-title">{job.displayName}</h3><p className="row-meta">{humanStatus(job.status)}{job.installedVersionCode !== null ? ` · version ${job.installedVersionCode}` : ''}</p>{job.message ? <p className="row-meta">{job.message}</p> : null}
-    {job.status === 'review_required' && signer && canAct ? canApprove ? <details className="details"><summary>Review publisher</summary><p className="row-meta">Compare this signing fingerprint with a trusted copy of the app before approving it. This approves the publisher for everyone using this server, not only your phone.</p><code className="technical">{signer}</code><div className="actions"><button className="action" disabled={busy} onClick={() => void onApprove(job, signer)}>Approve publisher and continue</button></div></details> : <p className="row-meta">The server curator needs to approve this app’s publisher before installation can continue.</p> : null}
+    {job.status === 'review_required' && signer && canAct ? canApprove ? <details className="details"><summary>Review publisher</summary><p className="row-meta">Compare this signing fingerprint with a trusted copy of the app before approving it. This approves the publisher for everyone using Borealis, not only your phone.</p><code className="technical">{signer}</code><div className="actions"><button className="action" disabled={busy} onClick={() => void onApprove(job, signer)}>Approve publisher and continue</button></div></details> : <p className="row-meta">A Borealis curator needs to approve this app’s publisher before installation can continue.</p> : null}
     <details className="details"><summary>Request details</summary><p className="technical">{job.packageName}</p><p className="row-meta">Requested {formatTime(job.createdAt)}</p></details>
   </div>{retry && canAct ? <button className="action secondary" disabled={busy} onClick={() => void onQueue(job.packageName)}>{job.status === 'succeeded' ? 'Check for update' : 'Try again'}</button> : null}</article>
 }
