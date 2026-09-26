@@ -1,3 +1,9 @@
+import java.net.URI
+import java.security.KeyStore
+import java.security.MessageDigest
+import java.security.PrivateKey
+import java.security.cert.X509Certificate
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -9,10 +15,71 @@ plugins {
 
 val lightSdkPath = providers.gradleProperty("borealis.sdkPath").getOrElse("../light-sdk")
 val releaseKeystorePath = providers.environmentVariable("BOREALIS_RELEASE_KEYSTORE").orNull
+val companionUrl = providers.gradleProperty("borealis.companionUrl").getOrElse("http://10.0.2.2:8787")
+val dispenserUrl = providers.gradleProperty("borealis.dispenserUrl").getOrElse("https://auroraoss.com/api/auth")
+
+fun buildConfigUrl(value: String): String {
+    require(value.none { it == '"' || it == '\\' || it.isISOControl() }) { "Build URL contains unsafe characters" }
+    return "\"$value\""
+}
 
 fun requiredReleaseEnvironment(name: String): String =
     providers.environmentVariable(name).orNull?.takeIf { it.isNotBlank() }
         ?: error("$name must be set when BOREALIS_RELEASE_KEYSTORE is configured")
+
+val validateReleaseConfiguration = tasks.register("validateReleaseConfiguration") {
+    group = "verification"
+    description = "Reject missing/development signing keys and nonproduction companion URLs."
+    doLast {
+        check(System.getProperty("lightSdk.unsigned") != "true") { "Borealis releases must be signed; lightSdk.unsigned is forbidden" }
+        val service = URI(companionUrl)
+        check(service.scheme == "https" && service.host == "borealis.loosewire.dev" &&
+            service.port == -1 && service.userInfo == null && service.query == null && service.fragment == null &&
+            (service.path.isNullOrEmpty() || service.path == "/")) {
+            "Release companion URL must be https://borealis.loosewire.dev without credentials, port, query, or fragment"
+        }
+        val delivery = URI(dispenserUrl)
+        check(delivery.scheme == "https" && delivery.host == "auroraoss.com" &&
+            delivery.port == -1 && delivery.userInfo == null && delivery.query == null && delivery.fragment == null &&
+            delivery.path == "/api/auth") { "Release dispenser URL must be https://auroraoss.com/api/auth" }
+        val keystorePath = releaseKeystorePath?.takeIf { it.isNotBlank() }
+            ?: error("BOREALIS_RELEASE_KEYSTORE is required for release builds; development-key fallback is disabled")
+        val keystoreFile = file(keystorePath)
+        check(keystoreFile.isFile) { "Release keystore does not exist" }
+        val devFile = rootProject.file("$lightSdkPath/sdk/keys/lightsdk-dev.jks")
+        check(keystoreFile.canonicalFile != devFile.canonicalFile) { "The public Light SDK development keystore cannot sign a release" }
+        val alias = requiredReleaseEnvironment("BOREALIS_RELEASE_KEY_ALIAS")
+        check(!alias.contains("debug", ignoreCase = true) && !alias.contains("lightsdk-dev", ignoreCase = true)) {
+            "A dedicated Borealis release key alias is required"
+        }
+        val store = KeyStore.getInstance(keystoreFile, requiredReleaseEnvironment("BOREALIS_RELEASE_STORE_PASSWORD").toCharArray())
+        check(store.getKey(alias, requiredReleaseEnvironment("BOREALIS_RELEASE_KEY_PASSWORD").toCharArray()) is PrivateKey) {
+            "The release alias must contain a private key"
+        }
+        val certificate = store.getCertificate(alias) as? X509Certificate ?: error("Release signing certificate is missing")
+        certificate.checkValidity()
+        check(!certificate.subjectX500Principal.name.contains("Android Debug", ignoreCase = true)) {
+            "Android debug certificates cannot sign a release"
+        }
+        if (devFile.isFile) {
+            val devStore = KeyStore.getInstance(devFile, "android".toCharArray())
+            check(!certificate.encoded.contentEquals(devStore.getCertificate("lightsdk-dev").encoded)) {
+                "The public Light SDK development certificate cannot sign a release, even under a different alias"
+            }
+        }
+        val expected = requiredReleaseEnvironment("BOREALIS_RELEASE_CERT_SHA256").replace(":", "").lowercase()
+        check(expected.matches(Regex("[0-9a-f]{64}"))) { "BOREALIS_RELEASE_CERT_SHA256 must be the dedicated certificate SHA-256 fingerprint" }
+        val actual = MessageDigest.getInstance("SHA-256").digest(certificate.encoded).joinToString("") { "%02x".format(it) }
+        check(actual == expected) { "Release certificate does not match the pinned signing identity" }
+    }
+}
+
+// Guard every release variant entry point, including direct packaging tasks.
+tasks.configureEach {
+    if (name.contains("Release", ignoreCase = true) && name != "validateReleaseConfiguration") {
+        dependsOn(validateReleaseConfiguration)
+    }
+}
 
 android {
     compileSdk = 36
@@ -46,12 +113,12 @@ android {
         buildConfigField(
             "String",
             "BOREALIS_COMPANION_URL",
-            "\"${providers.gradleProperty("borealis.companionUrl").getOrElse("http://10.0.2.2:8787")}\"",
+            buildConfigUrl(companionUrl),
         )
         buildConfigField(
             "String",
             "BOREALIS_DISPENSER_URL",
-            "\"${providers.gradleProperty("borealis.dispenserUrl").getOrElse("https://auroraoss.com/api/auth")}\"",
+            buildConfigUrl(dispenserUrl),
         )
     }
 
@@ -67,11 +134,7 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
-            signingConfig = if (releaseKeystorePath.isNullOrBlank()) {
-                signingConfigs.getByName("lightsdkDev")
-            } else {
-                signingConfigs.getByName("release")
-            }
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 

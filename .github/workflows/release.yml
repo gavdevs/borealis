@@ -1,0 +1,102 @@
+name: Draft Android release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing vX.Y.Z tag whose version matches app/lighttool.toml
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.repository == 'gavdevs/borealis'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    environment: android-release
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate tag, version, and main-branch ancestry
+        id: metadata
+        run: python3 scripts/release-metadata.py
+      - uses: ./.github/actions/setup-android
+      - name: Restore the dedicated release keystore
+        env:
+          BOREALIS_RELEASE_KEYSTORE_BASE64: ${{ secrets.BOREALIS_RELEASE_KEYSTORE_BASE64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import os
+          from pathlib import Path
+          encoded = os.environ.get('BOREALIS_RELEASE_KEYSTORE_BASE64', '')
+          if not encoded:
+              raise SystemExit('BOREALIS_RELEASE_KEYSTORE_BASE64 is required.')
+          target = Path(os.environ['RUNNER_TEMP']) / 'borealis-release.p12'
+          payload = base64.b64decode(encoded, validate=True)
+          if not payload:
+              raise SystemExit('Release keystore is empty.')
+          descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          with os.fdopen(descriptor, 'wb') as stream:
+              stream.write(payload)
+          PY
+      - name: Unit tests, signed release, and resolved dependency provenance
+        env:
+          BOREALIS_RELEASE_KEYSTORE: ${{ runner.temp }}/borealis-release.p12
+          BOREALIS_RELEASE_STORE_PASSWORD: ${{ secrets.BOREALIS_RELEASE_STORE_PASSWORD }}
+          BOREALIS_RELEASE_KEY_PASSWORD: ${{ secrets.BOREALIS_RELEASE_KEY_PASSWORD }}
+          BOREALIS_RELEASE_KEY_ALIAS: ${{ secrets.BOREALIS_RELEASE_KEY_ALIAS }}
+          BOREALIS_RELEASE_CERT_SHA256: ${{ secrets.BOREALIS_RELEASE_CERT_SHA256 }}
+        run: >-
+          ./gradlew --no-daemon --max-workers=1
+          -Pborealis.sdkPath=.ci/light-sdk
+          -Pborealis.companionUrl=https://borealis.loosewire.dev
+          --init-script scripts/release-provenance.init.gradle.kts
+          :app:testDebugUnitTest :app:assembleRelease :app:writeReleaseDependencyProvenance
+      - name: Verify APK identity and package corresponding source
+        env:
+          BOREALIS_RELEASE_CERT_SHA256: ${{ secrets.BOREALIS_RELEASE_CERT_SHA256 }}
+        run: python3 scripts/release-package.py
+      - name: Remove the runner's signing-key copy
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          (Path(os.environ['RUNNER_TEMP']) / 'borealis-release.p12').unlink(missing_ok=True)
+          PY
+      - name: Create private draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "$RELEASE_TAG" release-output/* --verify-tag --draft \
+            --title "Borealis $RELEASE_TAG" --notes-file release-output/RELEASE-NOTES.md
+      - name: Retain packaged release artifacts for troubleshooting
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: borealis-${{ steps.metadata.outputs.tag }}
+          path: release-output/
+          if-no-files-found: error
+          retention-days: 14

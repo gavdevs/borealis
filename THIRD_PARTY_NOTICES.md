@@ -6,7 +6,7 @@ Borealis uses `com.auroraoss:gplayapi:3.6.4` and a device-properties profile der
 
 - Project: https://gitlab.com/AuroraOSS/gplayapi
 - Version reviewed for this build: `3.6.4`
-- Source revision reviewed for this build: `18ec2bd39eb28553ac4f80a7937c3fb95081fe67`
+- Source revision reviewed for this build: `18ec2bd74995d30e500b756359a4de3e37976f03`
 - License: GNU General Public License v3.0 or later
 
 The full GPL version 3 license text is included in `LICENSE`. When distributing a Borealis binary, distribute the corresponding Borealis source and the exact GPlayAPI source used to build it, including build instructions and these notices.

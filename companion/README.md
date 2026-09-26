@@ -1,6 +1,6 @@
 # Borealis companion
 
-Borealis is a personal, positive-allowlist control plane for the Borealis Light
+Borealis is a positive-allowlist control plane for the Borealis Light
 Phone installer. Search and policy live here; the phone receives only explicit,
 short-lived install jobs for packages assigned to that device.
 
@@ -28,9 +28,18 @@ visible at mobile sizes; the adjacent wordmark supplies its accessible name.
 - Package identifiers, signing fingerprints, and request diagnostics belong in
   expandable details, not the default workflow.
 
-This is a React/TypeScript interface with Vite and plain CSS. The existing Hono,
-Node.js, SQLite, and signed-job protocol remain unchanged. Admin-token login is
-still the prototype's authentication mechanism, not a new account system.
+This is a React/TypeScript interface with Vite and plain CSS, a Hono API, and
+SQLite-compatible storage through libSQL. It supports either a local database
+or a hosted libSQL database on Turso. The signed-job protocol is unchanged.
+Accounts use usernames and passwords, without email. Each account has its own
+app collection and paired phones. A shared, curator-managed positive allowlist
+controls which packages can enter those collections; a public signup cannot
+approve arbitrary packages or edit publisher signing pins.
+
+This is the foundation for one shared hosted service. The Cloudflare Worker
+adapter and deployment pipeline target `https://borealis.loosewire.dev` with
+edge throttling and persistent account limits. See the [deployment runbook](../docs/deployment.md)
+for setup and verification; the full app-admission workflow remains unfinished.
 
 ## Run locally
 
@@ -48,8 +57,9 @@ pnpm dev
 
 In a second terminal, run `pnpm dev:web` and open
 `http://127.0.0.1:5173`. Vite forwards `/api` to the Hono service on port 8787.
-The admin token is stored only in `sessionStorage`; closing the browser tab ends
-that browser session.
+The browser stores only an HttpOnly account-session cookie; no password or
+admin token goes into browser storage. The session survives a browser restart
+for up to 30 days unless signed out or invalidated by a password change.
 
 For a production-style build:
 
@@ -59,10 +69,101 @@ pnpm start
 ```
 
 The Hono server serves the built React client from `dist/client`. Keep
+the default `BOREALIS_HOST=127.0.0.1` for local testing; only change the bind
+address when deliberately configuring a protected deployment. Keep
 `BOREALIS_DATABASE_PATH` on persistent storage: the SQLite database contains
 the allowlist, device credential hashes, jobs, and the generated Ed25519
 signing key. Back it up as one unit. No plaintext phone bearer or poll secret is
 stored.
+
+## Accounts
+
+- **Create account:** choose a username (3–32 letters, digits, or underscores,
+  case-insensitive) and a 15–128-character password/passphrase. No email,
+  confirmation email, recovery code, or third-party identity service is required.
+- **Sign in:** use that username and password. Passwords are salted scrypt
+  hashes (`N=32768, r=8, p=3`), never plaintext or a fast SHA-256 password hash.
+  Spaces and Unicode are accepted; passwords are not trimmed or truncated.
+- **Profile:** shows the username, password change, and sign out. Changing a
+  password requires the current password, revokes all old sessions, and replaces
+  the session in the current browser. This does not revoke paired phones.
+- **Recovery:** there is no self-service forgotten-password reset. Save the
+  password in a password manager; having a session alone does not bypass the
+  current-password requirement. Recovery needs a separately designed mechanism.
+- **Server owner:** use the one-time owner setup on the sign-in screen with the
+  existing `BOREALIS_ADMIN_TOKEN`, plus a new username/password. This atomically
+  creates the curator and claims legacy unowned phones and existing app selections.
+  Ordinary signup never claims legacy data, even if it is the first account.
+  After setup, the token cannot be used as an API bearer or to create another
+  curator. Do not delete the `bootstrap_claimed` metadata record.
+
+Sessions are random 256-bit credentials; only their SHA-256 digests are stored
+in the database. Cookies are `HttpOnly; SameSite=Strict; Path=/`, with `Secure`
+and a `__Host-` prefix on HTTPS. HTTP is permitted only for loopback development.
+Mutating browser requests require the `X-Borealis-Request: 1` header and an
+allowed Origin when supplied; POST/PUT bodies must be JSON. There is no CORS
+allowlist that permits arbitrary sites to send authenticated requests.
+
+Signup, login, setup, password changes, and pairing-code attempts have persistent
+database-backed limits; login is also limited by normalized username. The Node
+adapter uses the actual socket peer, not caller-supplied forwarding headers.
+The Cloudflare adapter uses the platform's `CF-Connecting-IP` and an edge limiter
+before database access. Node password hashing runs one job at a time with a
+bounded queue to limit memory pressure on this development machine. Workers use
+the same scrypt parameters synchronously without cross-request promise state.
+
+The implementation follows [OWASP password-storage guidance](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html)
+and [session guidance](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html);
+this does not imply a completed production security audit.
+
+## Turso database
+
+Set `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` together in the server environment
+or your ignored `.env` file. The URL must use `libsql://` or `https://`. Both values
+are required: partial configuration fails rather than silently using local
+storage. When neither is set, `BOREALIS_DATABASE_PATH` remains the local fallback.
+The token must be scoped to this database, not an entire Turso group; never put
+it in a `VITE_` variable, browser storage, phone configuration, or source control.
+Use an explicit token expiry and renew it before that date. The initial local
+Turso preview uses a 90-day database token; a hosted deployment should receive
+its own credential rather than copying a personal CLI or organization token.
+
+This adapter targets Turso's **libSQL** databases using `@libsql/client/web` for
+remote connections. It does not use the newer `--tursodb` engine. The same async
+repository API is exercised locally with the libSQL file driver. Multi-statement
+writes use write transactions, including signer initialization, pairing,
+assignment/job creation, revocation, and result reporting.
+
+To move an existing instance safely:
+
+1. Log in using `turso auth login`, confirm the intended subscription/organization,
+   and select an existing compatible group or region.
+2. Stop the companion to prevent writes during cutover. Make a consistent SQLite
+   backup with SQLite's `.backup` command; do not copy only the main file while
+   WAL writes may exist. Keep the backup private: it contains the signing key.
+3. Create a **new** database, for example `turso db create borealis --from-file
+   /absolute/path/to/backup.sqlite --group GROUP --wait`. Do not import over
+   another application's database. Use a libSQL group, not `--tursodb`.
+4. Obtain that database's URL and a database-scoped read/write token. Store both
+   securely in the server environment. Keep the old local database as rollback.
+5. Start the companion and verify record counts, the unchanged signing public
+   key identity, authenticated reads, and a test pairing/job flow before treating
+   the cutover as complete. If remote writes occur, the old local copy is no longer
+   current; reconcile them before any rollback.
+
+Startup creates missing tables/indexes idempotently and adds the device-owner
+column in a serialized migration without replacing existing rows or keys.
+Back up the entire database, including accounts, sessions, private collections,
+and bootstrap metadata; restoring just the old six tables loses ownership.
+Future schema changes need explicit migrations. The current
+signing key remains persisted in the database, just as it was locally; do not
+rotate it during migration or existing phones will no longer trust the server.
+The Cloudflare runtime uses the fetch-based driver and Worker secrets. Run
+`pnpm worker:migrate` deliberately before deployment; API requests never migrate
+the schema or create a new signing identity. See [deployment](../docs/deployment.md).
+
+References: [Turso TypeScript SDK](https://docs.turso.tech/sdk/ts/reference),
+[database creation/import](https://docs.turso.tech/cli/db/create).
 
 ## Trust model
 
@@ -162,19 +263,34 @@ lowercase hexadecimal certificate SHA-256 values.
 for a job that had no signer pin. The server rejects `awaiting_user_action` and
 `succeeded` for an unpinned job.
 
-## Admin API
+## Companion API
 
-Send `Authorization: Bearer <BOREALIS_ADMIN_TOKEN>`.
+Paths below are relative to `/api/borealis/v1`. Browser authentication uses the
+session cookie, not the old admin bearer. Mutation requests also send
+`X-Borealis-Request: 1` and `Content-Type: application/json` for JSON bodies.
 
-- `GET|POST /admin/allowlist`
-- `GET|PUT|DELETE /admin/allowlist/:packageName`
-- `GET /admin/pairings`
-- `POST /admin/pairings/approve`
-- `GET /admin/devices`
-- `DELETE /admin/devices/:deviceId`
-- `GET|POST /admin/devices/:deviceId/assignments`
-- `DELETE /admin/devices/:deviceId/assignments/:packageName`
-- `GET|POST /admin/devices/:deviceId/jobs`
+- `GET /auth/session` → account summary or `null`, plus setup availability.
+- `POST /auth/signup` and `/auth/signin` → `{username,password}`.
+- `POST /auth/signout` → `{}`; revokes the current session.
+- `POST /auth/change-password` → `{currentPassword,newPassword}`.
+- `POST /auth/bootstrap` → `{adminToken,username,password}`; one time only.
+- `GET|POST /me/apps`; POST selects `{packageName}` from the approved catalog.
+- `DELETE /me/apps/:packageName`; affects only this account and its phones.
+- `GET /me/pairings`; lists only this account's claimed, non-activated pairings.
+- `POST /me/pairings/preview` and `/me/pairings/approve` → `{userCode}`.
+  Unclaimed pairing codes cannot be enumerated.
+- `GET /me/devices`
+- `DELETE /me/devices/:deviceId`
+- `GET|POST /me/devices/:deviceId/assignments`
+- `DELETE /me/devices/:deviceId/assignments/:packageName`
+- `GET|POST /me/devices/:deviceId/jobs`
+- Curators only: `GET|POST /admin/allowlist` and
+  `GET|PUT|DELETE /admin/allowlist/:packageName`.
+
+`GET /catalog/search` requires sign-in. Members search only the approved
+catalog; curators can search public Play metadata to review and add packages.
+All phone operations, even for curators, are restricted to the account's own
+phones. Another account's device identifiers are treated as not found.
 
 Assigning an allowlisted package creates its first job. Posting to `/jobs`
 queues a later update or retry. APK URLs and bytes are deliberately absent from
@@ -188,13 +304,12 @@ pnpm typecheck
 pnpm build
 ```
 
-Tests cover the fixture-backed public Play provider, admin auth, pairing,
-activation, Ed25519 verification over the exact payload string, device-bound
-jobs, and the signer-review gate.
+Tests cover passwords, cookie/session lifecycle, origin checks, rate limits,
+one-time ownership migration, cross-account denial, curated app permissions,
+pairing, exact-byte Ed25519 signatures, device-bound jobs, and signer review.
 
 For the browser UI, `python3 tests/ui-smoke.py` checks the already-running
 companion with one headless Chromium instance (requires Python Playwright).
-All write actions are intercepted with isolated fixture data. If
-`BOREALIS_ADMIN_TOKEN` is set in the environment, the script also checks real
-login and read-only navigation. It never changes the actual app collection or
-phone pairings. Run it after, not alongside, the web build.
+All write actions are intercepted with isolated fixture data. It never changes
+real accounts, app collections, or phone pairings. Run it after, not alongside,
+the web build.

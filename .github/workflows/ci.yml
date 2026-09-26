@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  companion:
+    name: Companion and Worker
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      NODE_OPTIONS: --max-old-space-size=2048
+      RAYON_NUM_THREADS: '2'
+      UV_THREADPOOL_SIZE: '2'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-companion
+      - name: Unit and account-isolation tests
+        working-directory: companion
+        run: pnpm test
+      - name: Typecheck and build companion
+        working-directory: companion
+        run: pnpm build
+      - name: Check Cloudflare Worker bundle
+        working-directory: companion
+        run: pnpm worker:check
+
+  android:
+    name: Sideloaded Android
+    needs: companion
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-android
+      - name: Unit tests and debug APK
+        run: >-
+          ./gradlew --no-daemon --max-workers=1
+          -Pborealis.sdkPath=.ci/light-sdk
+          :app:testDebugUnitTest :app:assembleDebug
+      - name: Prove a release cannot fall back to development signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ./gradlew --no-daemon --max-workers=1 -Pborealis.sdkPath=.ci/light-sdk -Pborealis.companionUrl=https://borealis.loosewire.dev :app:validateReleaseConfiguration > "$RUNNER_TEMP/borealis-release-guard.log" 2>&1; then
+            echo 'Release guard unexpectedly accepted missing signing credentials.' >&2
+            exit 1
+          fi
+          grep -q 'BOREALIS_RELEASE_KEYSTORE is required' "$RUNNER_TEMP/borealis-release-guard.log"
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: android-test-reports
+          path: app/build/reports/tests/
+          if-no-files-found: warn
+          retention-days: 7

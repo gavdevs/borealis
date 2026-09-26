@@ -10,18 +10,18 @@ export class ApiError extends Error {
 }
 
 type RequestOptions = {
-  token?: string
   method?: 'GET' | 'POST' | 'PUT' | 'DELETE'
   body?: unknown
 }
 
 export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const headers = new Headers({ Accept: 'application/json' })
-  if (options.token) headers.set('Authorization', `Bearer ${options.token}`)
+  if (options.method && options.method !== 'GET') headers.set('X-Borealis-Request', '1')
   if (options.body !== undefined) headers.set('Content-Type', 'application/json')
 
   const response = await fetch(`${API_BASE}${path}`, {
     method: options.method ?? 'GET',
+    credentials: 'same-origin',
     headers,
     ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
   })

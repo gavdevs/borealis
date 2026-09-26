@@ -2,7 +2,11 @@ packages:
   - .
 allowBuilds:
   esbuild: true
+  workerd: true
 minimumReleaseAgeExclude:
   - '@vitest/mocker@5.0.2'
   - '@vitest/spy@5.0.2'
   - vitest@5.0.2
+  - '@cloudflare/workers-types@5.20260926.1'
+  - miniflare@5.20260925.0-alpha
+  - wrangler@4.141.0

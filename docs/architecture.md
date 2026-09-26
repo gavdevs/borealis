@@ -14,6 +14,24 @@ Phone verifies job -> direct Play download -> base + splits verification
 
 The companion never receives Google credentials and never proxies or stores APK bytes.
 
+## Shared accounts
+
+People sign up and sign in using a username and password, without email.
+Passwords are salted scrypt hashes; opaque browser sessions are stored as
+digests and expire after 30 days. Profile password changes require the current
+password and invalidate old browser sessions. No forgotten-password recovery
+flow is implemented.
+
+The shared catalog is curator-managed. Each member's chosen apps, phones,
+assignments, and job history are scoped to that account. Phone pairing is
+claimed atomically by entering the exact short-lived code, never by listing
+other people's pending requests. The phone continues using its independent
+device credential, not the browser username or password.
+
+One-time, setup-token-protected curator creation claims pre-account data;
+public signup can never claim it or grant curator privileges. Ownership and
+bootstrap metadata are part of the database backup, alongside the signing key.
+
 ## Trust model
 
 - A package must appear in the companion's positive allowlist before it can be assigned.

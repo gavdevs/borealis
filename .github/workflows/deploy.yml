@@ -1,0 +1,76 @@
+name: Deploy companion
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - companion/**
+      - scripts/ci-smoke.mjs
+      - .github/actions/setup-companion/**
+      - .github/workflows/deploy.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-companion
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      github.repository == 'gavdevs/borealis' && github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' || vars.BOREALIS_AUTO_DEPLOY == 'true')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment:
+      name: production
+      url: https://borealis.loosewire.dev
+    env:
+      NODE_OPTIONS: --max-old-space-size=2048
+      RAYON_NUM_THREADS: '2'
+      UV_THREADPOOL_SIZE: '2'
+      WRANGLER_SEND_METRICS: 'false'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-companion
+      - name: Test and build the candidate
+        working-directory: companion
+        run: |
+          pnpm test
+          pnpm build
+          pnpm worker:check
+      - name: Validate deployment settings and prepare versioned runtime secrets
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          BOREALIS_ADMIN_TOKEN: ${{ secrets.BOREALIS_ADMIN_TOKEN }}
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: node scripts/ci-worker-secrets.mjs
+      - name: Apply backward-compatible Turso schema updates
+        working-directory: companion
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: pnpm worker:migrate
+      - name: Deploy the Worker and companion assets
+        working-directory: companion
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm worker:deploy --secrets-file "$RUNNER_TEMP/borealis-worker-secrets.json"
+      - name: Remove the runner's runtime-secret copy
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          (Path(os.environ['RUNNER_TEMP']) / 'borealis-worker-secrets.json').unlink(missing_ok=True)
+          PY
+      - name: Verify the live service without creating user data
+        run: node scripts/ci-smoke.mjs

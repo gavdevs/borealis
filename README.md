@@ -17,15 +17,20 @@ The app consumes a custom SDK fork (by default `../light-sdk`). That fork adds t
 
 - **Web companion:** see [companion/README.md](companion/README.md) for Node.js,
   pnpm, configuration, and local startup. Copy the example environment file and
-  supply your own admin token. Keep the database and signing material private.
+  supply a private owner-setup token. Users sign up with a username and password,
+  without email. Keep the database and signing material private.
 - **Phone app:** requires JDK 17, Android SDK 36, and the pinned, patched Light SDK.
   Configure your Android SDK path locally, then use the included Gradle wrapper.
   The companion URL defaults to the emulator address `http://10.0.2.2:8787`;
   use `-Pborealis.companionUrl=https://your-companion.example` for a hosted instance.
-- **Distribution:** this initial source snapshot is not a published APK release
-  or a Cloudflare deployment. Release automation and production hosting remain
-  to be configured. Do not use the SDK's shared development signing key for a
-  production release.
+- **Hosting:** the production companion is configured for
+  `https://borealis.loosewire.dev` on Cloudflare Workers with Turso. See the
+  [deployment runbook](docs/deployment.md) for credentials, migrations, and
+  verification; configuration alone is not proof of a live deployment.
+- **Distribution:** [GitHub Actions and signed releases](docs/releases.md) build
+  against the pinned, patched SDK on hosted runners. Release builds require the
+  dedicated Borealis signing key and production HTTPS URL. Releases start as
+  private drafts, not public APK distribution.
 
 ## Development status
 
@@ -43,8 +48,17 @@ The prototype has passed initial phone unit tests and compilation, companion
 unit tests and typechecks, and fixture-based browser flows. Physical LP3
 end-to-end installation/update remains unverified. Recurring generation of
 update jobs and the intended category-admission policy are not complete; the
-current allowlist is manually curated. The companion is single-owner, with an
-admin token and one shared collection of apps/devices, not a multi-user service.
+current allowlist is manually curated. The companion supports username/password
+accounts, private app collections, and account-owned phones. Catalog approval
+and publisher pins are restricted to curators; public signup never grants that role.
+
+The planned product is a shared hosted service where each person logs in and
+pairs their own phones. Turso is the chosen hosted SQLite provider (replacing
+the earlier D1 proposal). The companion supports a Turso/libSQL connection.
+The Worker adapter, edge rate limits, and release automation are separate from
+physical phone validation. See [deployment](docs/deployment.md),
+[accounts](companion/README.md#accounts), and
+[database setup](companion/README.md#turso-database).
 
 ## Low-resource development
 

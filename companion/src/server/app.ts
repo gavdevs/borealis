@@ -4,19 +4,29 @@ import { createMiddleware } from 'hono/factory'
 import { bodyLimit } from 'hono/body-limit'
 import { secureHeaders } from 'hono/secure-headers'
 import { z, ZodError } from 'zod'
-import type { DeviceSummary, InstallJobPayload, JobSummary, SignedJobEnvelope } from '../shared/api.js'
+import type {
+  AllowlistItem,
+  InstallJobPayload,
+  JobSummary,
+  PairingSummary,
+  PlaySearchResult,
+  SignedJobEnvelope,
+} from '../shared/api.js'
+import { registerAccountAuth } from './account-auth.js'
 import type { BorealisConfig } from './config.js'
+import type { BorealisVariables } from './context.js'
 import {
   generateUserCode,
   normalizeUserCode,
   privateKeyFromPkcs8,
   randomBearer,
   randomNonce,
-  secureStringEqual,
   sha256Hex,
   signPayload,
+  type PersistedSigningKey,
 } from './crypto.js'
 import { BorealisDatabase } from './db.js'
+import { PasswordBusyError, type PasswordRuntime } from './passwords.js'
 import type { PlaySearchProvider } from './play-search.js'
 
 const API = '/api/borealis/v1'
@@ -48,24 +58,22 @@ const reportBodySchema = z.object({
   message: z.string().trim().max(1_000).nullable().optional(),
 }).strict()
 
-type Variables = {
-  device: DeviceSummary
-}
-
 export type AppOptions = {
   config: BorealisConfig
   database: BorealisDatabase
   playSearch: PlaySearchProvider
   clock?: () => Date
+  clientAddress?: (c: Context) => string
+  passwordRuntime?: PasswordRuntime
+  signingKey?: PersistedSigningKey
 }
 
-export function createBorealisApp(options: AppOptions): Hono<{ Variables: Variables }> {
+export async function createBorealisApp(options: AppOptions): Promise<Hono<{ Variables: BorealisVariables }>> {
   const { config, database, playSearch } = options
   const clock = options.clock ?? (() => new Date())
-  const initialNow = clock().toISOString()
-  const signingKey = database.getOrCreateSigningKey(initialNow)
+  const signingKey = options.signingKey ?? await database.getOrCreateSigningKey(clock().toISOString())
   const privateSigningKey = privateKeyFromPkcs8(signingKey.privateKeyPkcs8)
-  const app = new Hono<{ Variables: Variables }>()
+  const app = new Hono<{ Variables: BorealisVariables }>()
 
   app.use('*', secureHeaders())
   app.use(`${API}/*`, bodyLimit({ maxSize: 64 * 1024, onError: (c) => c.json({ error: 'Request body is too large.' }, 413) }))
@@ -74,26 +82,30 @@ export function createBorealisApp(options: AppOptions): Hono<{ Variables: Variab
     await next()
   })
 
-  const adminAuth = createMiddleware(async (c, next) => {
-    const token = bearerToken(c.req.header('Authorization'))
-    if (!token || !secureStringEqual(token, config.adminToken)) {
-      return c.json({ error: 'A valid Borealis admin token is required.' }, 401)
-    }
-    await next()
-  })
+  const {
+    accountAuth,
+    curatorAuth,
+    browserMutationGuard,
+    limit,
+  } = registerAccountAuth(app, options)
 
-  const deviceAuth = createMiddleware<{ Variables: Variables }>(async (c, next) => {
+  const deviceAuth = createMiddleware<{ Variables: BorealisVariables }>(async (c, next) => {
     const bearer = bearerToken(c.req.header('Authorization'))
     if (!bearer || !DEVICE_BEARER_PATTERN.test(bearer)) {
       return c.json({ error: 'A valid device credential is required.' }, 401)
     }
-    const device = database.authenticateDevice(sha256Hex(bearer))
+    const device = await database.authenticateDevice(sha256Hex(bearer))
     if (!device) return c.json({ error: 'This device is not active.' }, 401)
     c.set('device', device)
     await next()
   })
 
-  app.use(`${API}/admin/*`, adminAuth)
+  app.use(`${API}/catalog/search`, accountAuth)
+  app.use(`${API}/me/*`, browserMutationGuard)
+  app.use(`${API}/me/*`, accountAuth)
+  app.use(`${API}/admin/*`, browserMutationGuard)
+  app.use(`${API}/admin/*`, accountAuth)
+  app.use(`${API}/admin/*`, curatorAuth)
   app.use(`${API}/device/*`, deviceAuth)
 
   app.get(`${API}/health`, (c) => c.json({
@@ -111,7 +123,13 @@ export function createBorealisApp(options: AppOptions): Hono<{ Variables: Variab
     if (!parsed.success) return validationError(c, parsed.error)
 
     try {
-      const results = await playSearch.search(parsed.data.q, parsed.data.limit)
+      const account = c.get('account')
+      const results = account.role === 'curator'
+        ? await playSearch.search(parsed.data.q, parsed.data.limit)
+        : (await database.listAllowlist())
+          .filter((item) => allowlistMatches(item, parsed.data.q))
+          .slice(0, parsed.data.limit)
+          .map(mapPlaySearchResult)
       return c.json({ query: parsed.data.q, results })
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Google Play search failed.'
@@ -120,6 +138,7 @@ export function createBorealisApp(options: AppOptions): Hono<{ Variables: Variab
   })
 
   app.post(`${API}/pairings`, async (c) => {
+    if (!await limit(c, 'pairing-create', 30, 600)) return rateLimited(c, 600)
     const parsed = await parseJson(c, pairingBodySchema)
     if (!parsed.ok) return parsed.response
 
@@ -128,7 +147,7 @@ export function createBorealisApp(options: AppOptions): Hono<{ Variables: Variab
     const userCode = generateUserCode()
     const pairingId = randomUUID()
     const expiresAt = new Date(now.getTime() + config.pairingTtlMinutes * 60_000).toISOString()
-    database.createPairing({
+    await database.createPairing({
       id: pairingId,
       userCode,
       userCodeDigest: sha256Hex(normalizeUserCode(userCode)),
@@ -148,12 +167,12 @@ export function createBorealisApp(options: AppOptions): Hono<{ Variables: Variab
     }, 201)
   })
 
-  app.get(`${API}/pairings/:id`, (c) => {
+  app.get(`${API}/pairings/:id`, async (c) => {
     const pollSecret = bearerToken(c.req.header('Authorization'))
     if (!pollSecret || !POLL_SECRET_PATTERN.test(pollSecret)) {
       return c.json({ error: 'A valid pairing credential is required.' }, 401)
     }
-    const pairing = database.getPairing(c.req.param('id'), sha256Hex(pollSecret), clock().toISOString())
+    const pairing = await database.getPairing(c.req.param('id'), sha256Hex(pollSecret), clock().toISOString())
     if (!pairing) return c.json({ error: 'Pairing not found.' }, 404)
     return c.json({
       state: pairing.state,
@@ -162,12 +181,12 @@ export function createBorealisApp(options: AppOptions): Hono<{ Variables: Variab
     })
   })
 
-  app.post(`${API}/pairings/:id/activate`, (c) => {
+  app.post(`${API}/pairings/:id/activate`, async (c) => {
     const pollSecret = bearerToken(c.req.header('Authorization'))
     if (!pollSecret || !POLL_SECRET_PATTERN.test(pollSecret)) {
       return c.json({ error: 'A valid pairing credential is required.' }, 401)
     }
-    const device = database.activatePairing(c.req.param('id'), sha256Hex(pollSecret), clock().toISOString())
+    const device = await database.activatePairing(c.req.param('id'), sha256Hex(pollSecret), clock().toISOString())
     if (!device) return c.json({ error: 'Pairing is not approved or has expired.' }, 409)
     return c.json({
       deviceId: device.id,
@@ -177,7 +196,7 @@ export function createBorealisApp(options: AppOptions): Hono<{ Variables: Variab
     })
   })
 
-  app.get(`${API}/admin/allowlist`, (c) => c.json({ items: database.listAllowlist() }))
+  app.get(`${API}/admin/allowlist`, async (c) => c.json({ items: await database.listAllowlist() }))
 
   app.post(`${API}/admin/allowlist`, async (c) => {
     const parsed = await parseJson(c, allowlistBodySchema)
@@ -185,7 +204,7 @@ export function createBorealisApp(options: AppOptions): Hono<{ Variables: Variab
     const signerSha256 = normalizeSigner(parsed.data.signerSha256)
     if (signerSha256 === undefined) return c.json({ error: 'Signer SHA-256 must contain exactly 64 hexadecimal characters.' }, 400)
 
-    const item = database.createAllowlist({
+    const item = await database.createAllowlist({
       packageName: parsed.data.packageName,
       displayName: parsed.data.displayName,
       publisher: parsed.data.publisher,
@@ -196,8 +215,8 @@ export function createBorealisApp(options: AppOptions): Hono<{ Variables: Variab
     return c.json({ item }, 201)
   })
 
-  app.get(`${API}/admin/allowlist/:packageName`, (c) => {
-    const item = database.getAllowlist(c.req.param('packageName'))
+  app.get(`${API}/admin/allowlist/:packageName`, async (c) => {
+    const item = await database.getAllowlist(c.req.param('packageName'))
     return item ? c.json({ item }) : c.json({ error: 'Allowlisted package not found.' }, 404)
   })
 
@@ -209,7 +228,7 @@ export function createBorealisApp(options: AppOptions): Hono<{ Variables: Variab
     const signerSha256 = normalizeSigner(parsed.data.signerSha256)
     if (signerSha256 === undefined) return c.json({ error: 'Signer SHA-256 must contain exactly 64 hexadecimal characters.' }, 400)
 
-    const item = database.updateAllowlist(packageName, {
+    const item = await database.updateAllowlist(packageName, {
       displayName: parsed.data.displayName,
       publisher: parsed.data.publisher,
       reason: parsed.data.reason,
@@ -218,19 +237,60 @@ export function createBorealisApp(options: AppOptions): Hono<{ Variables: Variab
     return item ? c.json({ item }) : c.json({ error: 'Allowlisted package not found.' }, 404)
   })
 
-  app.delete(`${API}/admin/allowlist/:packageName`, (c) => {
-    const deleted = database.deleteAllowlist(c.req.param('packageName'), clock().toISOString())
+  app.delete(`${API}/admin/allowlist/:packageName`, async (c) => {
+    const deleted = await database.deleteAllowlist(c.req.param('packageName'), clock().toISOString())
     return deleted ? c.json({ ok: true }) : c.json({ error: 'Allowlisted package not found.' }, 404)
   })
 
-  app.get(`${API}/admin/pairings`, (c) => c.json({ pairings: database.listPairings(clock().toISOString()) }))
+  app.get(`${API}/me/apps`, async (c) => {
+    return c.json({ items: await database.listAccountApps(c.get('account').id) })
+  })
 
-  app.post(`${API}/admin/pairings/approve`, async (c) => {
+  app.post(`${API}/me/apps`, async (c) => {
+    const parsed = await parseJson(c, assignmentBodySchema)
+    if (!parsed.ok) return parsed.response
+    const item = await database.addAccountApp(c.get('account').id, parsed.data.packageName, clock().toISOString())
+    return item ? c.json({ item }, 201) : c.json({ error: 'Allowlisted package not found.' }, 404)
+  })
+
+  app.delete(`${API}/me/apps/:packageName`, async (c) => {
+    const removed = await database.removeAccountApp(
+      c.get('account').id,
+      c.req.param('packageName'),
+      clock().toISOString(),
+    )
+    return removed ? c.json({ ok: true }) : c.json({ error: 'Saved app not found.' }, 404)
+  })
+
+  app.get(`${API}/me/pairings`, async (c) => c.json({
+    pairings: await database.listPairings(clock().toISOString(), c.get('account').id),
+  }))
+
+  app.post(`${API}/me/pairings/preview`, async (c) => {
+    if (!await limit(c, 'pairing-preview', 30, 600)) return rateLimited(c, 600)
     const parsed = await parseJson(c, approvalBodySchema)
     if (!parsed.ok) return parsed.response
     const normalized = normalizeUserCode(parsed.data.userCode)
     if (normalized.length !== 12) return c.json({ error: 'Enter the 12-character code shown on the phone.' }, 400)
-    const pairing = database.approvePairing(sha256Hex(normalized), randomUUID(), clock().toISOString())
+    const pairing = await database.previewPairing(sha256Hex(normalized), clock().toISOString())
+    return pairing
+      ? c.json({ pairing: pairingSummary(pairing) })
+      : c.json({ error: 'Pairing code is invalid, used, or expired.' }, 404)
+  })
+
+  app.post(`${API}/me/pairings/approve`, async (c) => {
+    if (!await limit(c, 'pairing-approve', 30, 600)) return rateLimited(c, 600)
+    const parsed = await parseJson(c, approvalBodySchema)
+    if (!parsed.ok) return parsed.response
+    const normalized = normalizeUserCode(parsed.data.userCode)
+    if (normalized.length !== 12) return c.json({ error: 'Enter the 12-character code shown on the phone.' }, 400)
+    const owner = c.get('account').id
+    const pairing = await database.approvePairing(
+      sha256Hex(normalized),
+      randomUUID(),
+      clock().toISOString(),
+      owner,
+    )
     if (!pairing || !pairing.deviceId) return c.json({ error: 'Pairing code is invalid, used, or expired.' }, 404)
     return c.json({
       pairing: {
@@ -239,21 +299,25 @@ export function createBorealisApp(options: AppOptions): Hono<{ Variables: Variab
         state: pairing.state,
         expiresAt: pairing.expiresAt,
       },
-      device: database.getDevice(pairing.deviceId),
+      device: await database.getDevice(pairing.deviceId, owner),
     })
   })
 
-  app.get(`${API}/admin/devices`, (c) => c.json({ devices: database.listDevices() }))
+  app.get(`${API}/me/devices`, async (c) => c.json({ devices: await database.listDevices(c.get('account').id) }))
 
-  app.delete(`${API}/admin/devices/:deviceId`, (c) => {
-    const revoked = database.revokeDevice(c.req.param('deviceId'), clock().toISOString())
+  app.delete(`${API}/me/devices/:deviceId`, async (c) => {
+    const revoked = await database.revokeDevice(
+      c.req.param('deviceId'),
+      clock().toISOString(),
+      c.get('account').id,
+    )
     return revoked ? c.json({ ok: true }) : c.json({ error: 'Active device not found.' }, 404)
   })
 
-  app.get(`${API}/admin/devices/:deviceId/assignments`, (c) => {
-    const device = database.getDevice(c.req.param('deviceId'))
+  app.get(`${API}/me/devices/:deviceId/assignments`, async (c) => {
+    const device = await database.getDevice(c.req.param('deviceId'), c.get('account').id)
     if (!device) return c.json({ error: 'Device not found.' }, 404)
-    const allowed = new Map(database.listAllowlist().map((item) => [item.packageName, item]))
+    const allowed = new Map((await database.listAllowlist()).map((item) => [item.packageName, item]))
     return c.json({
       assignments: device.assignments.flatMap((packageName) => {
         const item = allowed.get(packageName)
@@ -262,35 +326,57 @@ export function createBorealisApp(options: AppOptions): Hono<{ Variables: Variab
     })
   })
 
-  app.post(`${API}/admin/devices/:deviceId/assignments`, async (c) => {
+  app.post(`${API}/me/devices/:deviceId/assignments`, async (c) => {
     const parsed = await parseJson(c, assignmentBodySchema)
     if (!parsed.ok) return parsed.response
-    const result = database.assignPackage(c.req.param('deviceId'), parsed.data.packageName, clock().toISOString())
+    const result = await database.assignPackage(
+      c.req.param('deviceId'),
+      parsed.data.packageName,
+      clock().toISOString(),
+      c.get('account').id,
+    )
     if (!result) return c.json({ error: 'Device or allowlisted package not found.' }, 404)
     return c.json(result, result.created ? 201 : 200)
   })
 
-  app.delete(`${API}/admin/devices/:deviceId/assignments/:packageName`, (c) => {
-    const removed = database.removeAssignment(c.req.param('deviceId'), c.req.param('packageName'), clock().toISOString())
+  app.delete(`${API}/me/devices/:deviceId/assignments/:packageName`, async (c) => {
+    const removed = await database.removeAssignment(
+      c.req.param('deviceId'),
+      c.req.param('packageName'),
+      clock().toISOString(),
+      c.get('account').id,
+    )
     return removed ? c.json({ ok: true }) : c.json({ error: 'Assignment not found.' }, 404)
   })
 
-  app.get(`${API}/admin/devices/:deviceId/jobs`, (c) => {
-    const device = database.getDevice(c.req.param('deviceId'))
-    return device ? c.json({ jobs: database.listJobs(device.id) }) : c.json({ error: 'Device not found.' }, 404)
+  app.get(`${API}/me/devices/:deviceId/jobs`, async (c) => {
+    const owner = c.get('account').id
+    const device = await database.getDevice(c.req.param('deviceId'), owner)
+    return device
+      ? c.json({ jobs: await database.listJobs(device.id, owner) })
+      : c.json({ error: 'Device not found.' }, 404)
   })
 
-  app.post(`${API}/admin/devices/:deviceId/jobs`, async (c) => {
+  app.post(`${API}/me/devices/:deviceId/jobs`, async (c) => {
     const parsed = await parseJson(c, assignmentBodySchema)
     if (!parsed.ok) return parsed.response
-    const job = database.queueJob(c.req.param('deviceId'), parsed.data.packageName, randomUUID(), clock().toISOString())
+    const owner = c.get('account').id
+    const device = await database.getDevice(c.req.param('deviceId'), owner)
+    if (!device) return c.json({ error: 'Device not found.' }, 404)
+    const job = await database.queueJob(
+      device.id,
+      parsed.data.packageName,
+      randomUUID(),
+      clock().toISOString(),
+      owner,
+    )
     return job ? c.json({ job }, 201) : c.json({ error: 'Assign this allowlisted package to the device before queuing it.' }, 409)
   })
 
-  app.get(`${API}/device/sync`, (c) => {
+  app.get(`${API}/device/sync`, async (c) => {
     const device = c.get('device')
     const now = clock()
-    const jobs = database.listSyncJobs(device.id, now.toISOString()).map((job): SignedJobEnvelope => {
+    const jobs = (await database.listSyncJobs(device.id, now.toISOString())).map((job): SignedJobEnvelope => {
       const issuedAt = now.toISOString()
       const expiresAt = new Date(now.getTime() + config.jobTtlSeconds * 1_000).toISOString()
       const payload: InstallJobPayload = {
@@ -312,7 +398,7 @@ export function createBorealisApp(options: AppOptions): Hono<{ Variables: Variab
         signature: signPayload(exactPayload, privateSigningKey),
       }
     })
-    const refreshed = database.getDevice(device.id) ?? device
+    const refreshed = (await database.getDevice(device.id)) ?? device
     return c.json({
       deviceId: refreshed.id,
       deviceLabel: refreshed.label,
@@ -326,12 +412,12 @@ export function createBorealisApp(options: AppOptions): Hono<{ Variables: Variab
     const parsed = await parseJson(c, reportBodySchema)
     if (!parsed.ok) return parsed.response
     const device = c.get('device')
-    const job = database.getJob(c.req.param('jobId'))
+    const job = await database.getJob(c.req.param('jobId'))
     if (!job || job.deviceId !== device.id) return c.json({ error: 'Job not found for this device.' }, 404)
 
     const observedSignerSha256 = normalizeSignerList(parsed.data.observedSignerSha256 ?? [])
     if (!observedSignerSha256) return c.json({ error: 'Observed signer values must be SHA-256 hex digests.' }, 400)
-    const acceptedSigners = database.getJobAcceptedSigners(job.id)
+    const acceptedSigners = await database.getJobAcceptedSigners(job.id)
     if (parsed.data.status === 'review_required' && observedSignerSha256.length === 0) {
       return c.json({ error: 'Signer review requires at least one observed signer.' }, 400)
     }
@@ -342,7 +428,7 @@ export function createBorealisApp(options: AppOptions): Hono<{ Variables: Variab
       return c.json({ error: 'A signer must be reviewed and pinned before installation.' }, 409)
     }
 
-    const revision = database.reportJob({
+    const revision = await database.reportJob({
       jobId: job.id,
       deviceId: device.id,
       status: parsed.data.status as JobSummary['status'],
@@ -355,12 +441,16 @@ export function createBorealisApp(options: AppOptions): Hono<{ Variables: Variab
   })
 
   app.notFound((c) => {
-    if (c.req.path.startsWith('/api/')) return c.json({ error: 'Not found.' }, 404)
+    if (c.req.path === '/api' || c.req.path.startsWith('/api/')) return c.json({ error: 'Not found.' }, 404)
     return c.notFound()
   })
 
   app.onError((error, c) => {
-    console.error(error)
+    if (error instanceof PasswordBusyError) {
+      c.header('Retry-After', '3')
+      return c.json({ error: 'Sign-in is busy. Try again in a few seconds.' }, 503)
+    }
+    console.error('Borealis request failed.', error instanceof Error ? error.name : 'UnknownError')
     return c.json({ error: 'Borealis could not complete that request.' }, 500)
   })
 
@@ -371,6 +461,37 @@ function bearerToken(header: string | undefined): string | null {
   if (!header) return null
   const match = /^Bearer\s+(.+)$/i.exec(header)
   return match?.[1]?.trim() ?? null
+}
+
+function allowlistMatches(item: AllowlistItem, query: string): boolean {
+  const needle = query.toLocaleLowerCase()
+  return [item.packageName, item.displayName, item.publisher]
+    .some((value) => value.toLocaleLowerCase().includes(needle))
+}
+
+function mapPlaySearchResult(item: AllowlistItem): PlaySearchResult {
+  return {
+    packageName: item.packageName,
+    displayName: item.displayName,
+    publisher: item.publisher,
+    detailUrl: `https://play.google.com/store/apps/details?id=${encodeURIComponent(item.packageName)}`,
+  }
+}
+
+function pairingSummary(pairing: PairingSummary): PairingSummary {
+  return {
+    id: pairing.id,
+    userCode: pairing.userCode,
+    deviceLabel: pairing.deviceLabel,
+    state: pairing.state,
+    expiresAt: pairing.expiresAt,
+    createdAt: pairing.createdAt,
+  }
+}
+
+function rateLimited(c: Context, retryAfterSeconds: number): Response {
+  c.header('Retry-After', String(retryAfterSeconds))
+  return c.json({ error: 'Too many attempts. Try again later.' }, 429)
 }
 
 function normalizeSigner(value: string | null | undefined): string | null | undefined {

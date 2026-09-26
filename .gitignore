@@ -25,6 +25,9 @@ borealis.properties
 .dev.vars
 .dev.vars.*
 .wrangler/
+.secrets/
+.ci/
+release-output/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal

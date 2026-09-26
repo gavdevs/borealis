@@ -14,5 +14,6 @@
     "forceConsistentCasingInFileNames": true,
     "types": ["node", "vitest/globals"]
   },
-  "include": ["src/server", "src/shared"]
+  "include": ["src/server", "src/shared"],
+  "exclude": ["src/server/worker.ts", "src/server/worker.test.ts"]
 }

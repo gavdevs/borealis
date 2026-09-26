@@ -1,3 +1,10 @@
+export type AccountSummary = {
+  id: string
+  username: string
+  role: 'member' | 'curator'
+  createdAt: string
+}
+
 export type AllowlistItem = {
   packageName: string
   displayName: string

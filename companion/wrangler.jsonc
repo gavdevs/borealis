@@ -1,0 +1,52 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "borealis-companion",
+  "main": "./src/server/worker.ts",
+  "compatibility_date": "2026-09-25",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    {
+      "pattern": "borealis.loosewire.dev",
+      "custom_domain": true
+    }
+  ],
+  "assets": {
+    "directory": "./dist/client",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api", "/api/*"]
+  },
+  "vars": {
+    "BOREALIS_PUBLIC_BASE_URL": "https://borealis.loosewire.dev",
+    "BOREALIS_PAIRING_TTL_MINUTES": "10",
+    "BOREALIS_JOB_TTL_SECONDS": "900",
+    "BOREALIS_PLAY_LANGUAGE": "en",
+    "BOREALIS_PLAY_COUNTRY": "us"
+  },
+  "secrets": {
+    "required": [
+      "BOREALIS_ADMIN_TOKEN",
+      "TURSO_DATABASE_URL",
+      "TURSO_AUTH_TOKEN"
+    ]
+  },
+  "ratelimits": [
+    {
+      "name": "API_RATE_LIMIT",
+      "namespace_id": "2026092501",
+      "simple": {
+        "limit": 120,
+        "period": 60
+      }
+    }
+  ],
+  "limits": {
+    "cpu_ms": 2000
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.1
+  }
+}

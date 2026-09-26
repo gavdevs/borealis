@@ -1,0 +1,15 @@
+name: Set up companion
+description: Pinned Node and pnpm with a frozen dependency installation.
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      with:
+        node-version: 22.22.2
+    - name: Install pinned pnpm
+      shell: bash
+      run: npm install --global --ignore-scripts pnpm@11.10.0
+    - name: Install locked dependencies
+      shell: bash
+      working-directory: companion
+      run: pnpm install --frozen-lockfile --ignore-scripts --network-concurrency=4 --child-concurrency=1

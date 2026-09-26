@@ -160,6 +160,11 @@ input[type="checkbox"]:checked::after { display: block; width: 6px; height: 11px
 .auth-panel > p { color: var(--secondary); }
 .auth-panel h2 + .section-copy { margin-top: 1.5rem; }
 .auth-panel .actions { margin-top: 2rem; }
+.auth-create { margin-top: 2.5rem; padding-top: 1.5rem; border-top: 1px solid var(--rule); }
+.auth-create p { margin-bottom: 0.35rem; color: var(--secondary); }
+.account-warning { margin-top: 1.5rem; color: var(--secondary); font-size: 0.9rem; line-height: 1.5; }
+.password-form { max-width: 38rem; }
+.password-form .field + .field, .password-form .field-hint + .field { margin-top: 1.5rem; }
 .footer { display: flex; justify-content: space-between; gap: 1rem 1.5rem; margin-top: auto; padding: 1.5rem var(--gutter) 2.25rem; border-top: 1px solid var(--rule); color: var(--secondary); font-size: 0.75rem; letter-spacing: 0.05em; }
 .footer p { margin: 0; }
 .footer a:hover { text-decoration: underline; }

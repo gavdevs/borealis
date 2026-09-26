@@ -1,0 +1,22 @@
+{
+  "extends": "./tsconfig.server.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": [
+    "src/server/account-auth.ts",
+    "src/server/app.ts",
+    "src/server/config.ts",
+    "src/server/context.ts",
+    "src/server/crypto.ts",
+    "src/server/db.ts",
+    "src/server/passwords.ts",
+    "src/server/play-search.ts",
+    "src/server/worker.ts",
+    "src/shared",
+    "worker-configuration.d.ts"
+  ]
+}
