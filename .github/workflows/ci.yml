@@ -47,11 +47,29 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-android
-      - name: Unit tests and debug APK
+      - name: Unit tests, debug APK, and dependency provenance
         run: >-
           ./gradlew --no-daemon --max-workers=1
           -Pborealis.sdkPath=.ci/light-sdk
-          :app:testDebugUnitTest :app:assembleDebug
+          --init-script scripts/release-provenance.init.gradle.kts
+          :app:testDebugUnitTest :app:assembleDebug :app:writeDebugDependencyProvenance
+      - name: Verify dependency provenance contains the Play client
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import csv
+          from pathlib import Path
+          import re
+          manifest = Path('app/build/reports/dependency-provenance/debug.tsv')
+          with manifest.open() as stream:
+              rows = list(csv.DictReader(stream, delimiter='\t'))
+          assert any(row['coordinate'] == 'com.auroraoss:gplayapi:3.6.4' for row in rows)
+          assert {'project:light-sdk:sdk:client', 'project:light-sdk:sdk:shared',
+                  'project:light-sdk:sdk:ui'} <= {row['coordinate'] for row in rows}
+          assert all(re.fullmatch('[0-9a-f]{64}', row['sha256']) for row in rows)
+          assert any(row['artifact'].endswith('.aar') for row in rows)
+          print(f'Verified {len(rows)} resolved dependency hashes.')
+          PY
       - name: Prove a release cannot fall back to development signing
         shell: bash
         run: |

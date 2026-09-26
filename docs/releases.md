@@ -7,8 +7,9 @@ approval. The repository and its GitHub releases remain private.
 ## Pipelines
 
 - `CI`: pull requests, `main` pushes, and manual runs. Runs companion tests,
-  typechecks, builds, and a Worker dry-run, then Android unit tests and a debug
-  build. The two jobs are sequential. Gradle uses one worker and the repository's
+  typechecks, builds, and a Worker dry-run, then Android unit tests, a debug
+  build, and dependency-provenance generation using the same artifact selection
+  as releases. The two jobs are sequential. Gradle uses one worker and the repository's
   memory caps; no emulator or Android build runs on the development machine.
 - `Cloudflare Workers Builds`: the companion's native GitHub connection, not a
   GitHub Actions deployment. Once connected, `main` pushes run companion tests,
@@ -58,26 +59,26 @@ app state. See [Android's signing guidance](https://developer.android.com/studio
 
 ## Create a draft
 
-1. Review and commit the intended release changes on `main`. The initial release
-   uses the existing `versionName = "0.1.0"` and `versionCode = 1` in
-   `app/lighttool.toml`; no version bump is needed before its first draft.
-   For each later release, update the semantic version and strictly increase
-   `versionCode` before committing.
+1. Review and commit the intended release changes on `main`. Set the semantic
+   `versionName` and a strictly increasing `versionCode` in `app/lighttool.toml`
+   before each new release tag. The current candidate is `0.1.1`, version code
+   `2`: the immutable `v0.1.0` tag exposed a dependency-provenance pipeline bug
+   and did not produce a draft APK. Never move a failed tag onto fixed source.
 2. Push `main` and wait for CI to pass on that exact commit. The release workflow
    checks main-branch ancestry but does not itself require a successful CI run.
 3. Create and push an immutable tag matching `v<versionName>` at the checked
-   commit. For the first draft, after confirming `HEAD` is that commit:
+   commit. For the current candidate, after confirming `HEAD` is that commit:
 
    ```sh
-   git tag -a v0.1.0 -m "Borealis v0.1.0"
-   git push origin refs/tags/v0.1.0
+   git tag -a v0.1.1 -m "Borealis v0.1.1"
+   git push origin refs/tags/v0.1.1
    ```
 
    The tag push starts `Draft Android release` on GitHub-hosted runners. A manual
    run can retry the same existing tag if no release for it exists:
 
    ```sh
-   gh workflow run release.yml --ref main -f tag=v0.1.0
+   gh workflow run release.yml --ref main -f tag=v0.1.1
    ```
 
 4. Review the resulting private draft and verify the APK on a physical Light Phone.
