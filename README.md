@@ -1,143 +1,90 @@
+<img src="docs/icon.png" alt="Borealis" width="96" height="96">
+
 # Borealis
 
-<img src="docs/icon.png" alt="Borealis North arrow icon" width="112" height="112">
+A few essential apps, without a full app store on your Light Phone.
 
-Borealis is an intentionally unsupported, sideload-only installer and updater for Light Phone III. Sign in on the web, search for an eligible app, and add it to your personal library. Your library appears on your paired phones, where you can install apps and see whether installed apps need updating. The phone has no store to browse: it downloads the correct Play artifacts, verifies them, and hands the complete base-and-split set to Android's installer.
+Choose apps on the website. Install and update them on your phone.
 
-This is not a Light Tool Library project and is not affiliated with Light, Aurora OSS, or Google. It constrains only the Borealis installation path; it is not a phone-wide application blocker.
+**[Sign in or create an account → borealis.loosewire.dev](https://borealis.loosewire.dev)**
 
-## Repository layout
+[Download Borealis](https://github.com/gavdevs/borealis/releases) · [Get help](https://github.com/gavdevs/borealis/issues)
 
-- `app/` — the Light SDK phone agent (`com.gav.borealis`)
-- `companion/` — the hosted web companion, personal libraries, app policy, pairing, and job service
-- `docs/` — trust model, protocol, and local-development notes
-- `patches/` — pinned Light SDK installer changes and SDK license notice
+## 1. Create your account
 
-The app consumes a custom SDK fork (by default `../light-sdk`). That fork adds the narrow `package-install-request` capability required for Android `PackageInstaller` sessions. Follow [the pinned SDK setup](patches/README.md) for a fresh checkout; an unmodified upstream SDK is not sufficient.
+Open [borealis.loosewire.dev](https://borealis.loosewire.dev) on your computer or
+another device. Choose **Create an account**, then pick a username and password.
+Already have an account? Sign in instead.
 
-## Using Borealis
+No email address is needed. Save your password somewhere safe—there is no email
+password reset.
 
-Borealis is Gav's centrally hosted service at [borealis.loosewire.dev](https://borealis.loosewire.dev).
-Create an account, sign in, and pair your phone. Users do not configure a server
-or need an admin token. There is no curator account or publisher-approval step.
+## 2. Pair your Light Phone
 
-On the paired phone, open `SIGN IN`. Sign in with Google so Borealis can download
-and update your library apps from Google Play. Enter your details on Google's
-page inside Borealis; no separately installed browser is required. Your connection
-is saved securely on the phone. The companion does not collect Google credentials,
-and Borealis does not store your Google password.
-Use `DISCONNECT` to remove Borealis's saved Play credentials from the phone.
-Once connected, the home button changes to `SIGNED IN`; tap it to manage the
-saved connection without repeating sign-in.
+With Borealis installed on your Light Phone III:
 
-Your Borealis username/password account is separate from this Google sign-in.
-Use the companion to pair phones and manage your library. Adding an app makes it
-available on every paired phone; there is no separate send or assignment step.
-The phone shows Install, Up to date, Update, or an explicit unavailable-check state.
-Downloads show real byte progress; verification, installation, and Android
-confirmation are separate stages, not a fabricated completion percentage.
+1. Open Borealis on the phone and tap **Pair**. Leave the pairing code on screen.
+2. On the website, go to **Home → Pair a phone**.
+3. Enter the code from your phone and choose **Continue**.
+4. Check that it's your phone, then choose **Approve phone** on the website.
+5. Back on your Light Phone, tap **Confirm** to finish pairing.
 
-## Development and operations
+If the phone still says it's waiting, tap its refresh button.
 
-- **Companion development:** see [companion/README.md](companion/README.md) for Node.js,
-  pnpm, configuration, and local startup. Copy the example environment file and
-  supply a private token for the contributor's local instance. Users of the
-  hosted service sign up with a username and password,
-  without email. Better Auth 1.7.6 manages password authentication and sessions;
-  its internal `username@users.borealis.invalid` aliases are never emailed.
-  Keep the database and signing material private.
-- **Phone app:** requires JDK 17, Android SDK 36, and the pinned, patched Light SDK.
-  Configure your Android SDK path locally, then use the included Gradle wrapper.
-  The companion URL defaults to the emulator address `http://10.0.2.2:8787`;
-  use `-Pborealis.companionUrl=https://your-companion.example` for a hosted instance.
-- **Hosting:** the production companion is live at
-  `https://borealis.loosewire.dev` on Cloudflare Workers Free with Turso, without
-  an explicit CPU override. Cloudflare's
-  native GitHub integration will build and deploy companion changes from `main`
-  once connected in the dashboard;
-  GitHub Actions handles checks and Android releases. See the
-  [deployment runbook](docs/deployment.md) for credentials, migrations, and
-  verification and the separate native GitHub connection step.
-- **Distribution:** [GitHub Actions and signed releases](docs/releases.md) build
-  against the pinned, patched SDK on hosted runners. Release builds require the
-  dedicated Borealis signing key and production HTTPS URL. Releases start as
-  reviewable drafts; public publication is an explicit release step. The
-  [BrightMarket release kit](store/brightmarket/README.md) contains listing copy,
-  metadata, icon, screenshots, and the submission checklist.
+## 3. Connect Google Play
 
-## Screenshots
+On your Light Phone, tap **Sign in** to open the Google Play screen, then tap
+**Sign in** again. Google's page opens inside Borealis; you don't need a browser
+installed on the phone.
 
-Phone screenshots show actual LP3 behavior. Companion screenshots use fictional
-demo data in the real web UI; they are not examples of guaranteed app availability.
+This lets Borealis download your chosen apps from Google Play. Your Google
+connection stays on your phone and is separate from your Borealis website account.
+Once connected, the button says **Signed in**.
 
-<img src="docs/screenshots/02-phone-download.png" alt="A real MIKU download with percentage, megabytes, and split-file progress on Light Phone III" width="270">
+If Borealis shows **Allow installs**, tap it and enable Android's installation
+permission for Borealis.
 
-<img src="docs/screenshots/04-web-library.png" alt="Borealis companion personal library with fictional demo apps" width="800">
+## 4. Add and install apps
 
-See [all screenshots and capture details](store/brightmarket/README.md#screenshots).
+1. On the website, open **Apps** and search for an app.
+2. Select it and choose **Add to library**.
+3. Open Borealis on your phone and tap the refresh button.
+4. Tap **Install** beside the app. You'll see download progress; confirm the
+   installation if Android asks.
 
-## Development status
+Your apps stay in the phone's library after installation. When an update check
+succeeds, they'll show **Up to date** or **Update available**. Tap **Update** when
+needed; Borealis also checks periodically for updates.
 
-The first vertical slice is under active construction:
+Removing an app from the website's library stops future installs and updates
+through Borealis. It does not uninstall the app from your phone.
 
-1. Create an account and pair a phone with the companion.
-2. Search eligible Play apps and add them to your private library.
-3. Sync that library to the phone and choose Install or Update.
-4. Request and verify a signed, device-bound job on the phone.
-5. Fetch the current device-specific base and splits directly from Google Play.
-6. Verify package identity, signer, size, and hashes, then request installation.
-7. Report the final result to the companion and periodically check for updates.
+## A look at Borealis
 
-The personal-library flow has passed phone unit tests and compilation, companion
-unit tests and typechecks, and fixture-based browser flows. On 2026-09-27,
-alpha.4 completed MIKU's real download and installation on an LP3, and the app
-then showed Up to date. Actual updates of existing third-party apps remain to test.
-App admission uses server-side
-Play-category filtering and targeted email/browser exclusions, not human approval.
-This automatic policy is a best-effort filter, not a guarantee that every app in
-an eligible category fits the philosophy. Accounts, libraries, and phones stay isolated.
+Choose your apps on the website:
 
-The Better Auth migration was applied to production on 2026-09-26 after a private
-backup. Existing account IDs, roles, password hashes, phone ownership, and exact
-signing-key bytes were verified unchanged. Browsers must sign in again; Better Auth
-uses opaque session tokens and signed cookies. Wrangler deployment to Workers Free
-and hosted HTTPS account, pairing, and signed-job checks passed; temporary fixtures
-were cleaned. Legacy-password production signin and the native GitHub build
-connection remain unverified. See the
-[deployment runbook](docs/deployment.md) for session-secret handling and remaining checks.
+<img src="docs/screenshots/04-web-library.png" alt="Borealis website showing a personal library with demo apps" width="800">
 
-On alpha.3 the LP3 completed Google authentication, securely saved the reusable
-credential, reused it successfully, and downloaded MIKU to the old publisher-review
-gate. Alpha.4 removed that gate and completed the MIKU installation, with Android
-identifying Borealis as its installer. This experimental flow is not
-supported Google OAuth, and future Google behavior can change.
+Follow the download on your phone:
 
-Borealis is one shared hosted service where each person logs in and
-pairs their own phones. Turso is the chosen hosted SQLite provider (replacing
-the earlier D1 proposal). The companion supports a Turso/libSQL connection.
-The Worker adapter, edge rate limits, and release automation are separate from
-physical phone validation. See [deployment](docs/deployment.md),
-[accounts](companion/README.md#accounts), and
-[database setup](companion/README.md#turso-database).
+<img src="docs/screenshots/02-phone-download.png" alt="Borealis on Light Phone III showing download percentage, megabytes, and file progress" width="270">
 
-## Low-resource development
+The website screenshot uses fictional demo apps. The phone screenshot is a real download.
 
-This development machine is resource constrained. Run only one build or test
-command at a time, including builds in adjacent projects. Prefer targeted,
-incremental checks; avoid `clean`, full SDK test suites, emulators, and overlapping
-watch servers unless the task actually needs them.
+## Good to know
 
-The phone build defaults to one Gradle worker, no parallel tasks, a 1536 MiB JVM
-heap, and in-process Kotlin compilation. Gradle's JVM sees at most two processors
-to limit internal compiler/GC concurrency. Persistent Gradle daemons are disabled
-(Gradle can still use a short-lived single-use daemon for a build). These are
-per-process limits, not a hard total-memory cap for all Android build tools.
+- Borealis is for **Light Phone III** and is an independent, experimental app—not
+  an official Light tool.
+- It focuses on practical apps and filters out categories such as games, social
+  networks, email, browsers, and entertainment. The filter isn't perfect.
+- Not every Android app will work on a Light Phone, even if it installs.
+- If an app doesn't appear on your phone, check your internet connection, finish
+  pairing on both screens, and tap refresh.
+- To manage your Google connection, tap **Signed in** on the phone. **Disconnect**
+  removes the saved connection from Borealis.
 
-Companion tests also use one worker with parallel files disabled. Avoid running
-them alongside the Android build. Stop task-owned development servers when done.
-Run expensive checks at lower scheduling priority where practical, for example
-`nice -n 10 ./gradlew :app:testDebugUnitTest --console=plain`.
+Need a hand? [Report a problem](https://github.com/gavdevs/borealis/issues).
 
-## Licensing
+---
 
-Borealis is intended to be distributed under GPL-3.0-or-later because the phone client uses Aurora OSS `gplayapi`, which is GPL-family software. Preserve upstream notices and provide corresponding source whenever distributing binaries.
+[Source license](LICENSE) · [Developer documentation](docs/architecture.md)
