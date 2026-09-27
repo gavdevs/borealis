@@ -230,10 +230,65 @@ class PersonalPlayAuthProviderTest {
         assertNull(opened!!.rawQuery)
         assertEquals("Email=person%40example.test&Token=fake%2Ba%3Db&service=ac2dm", connection.output.toString("UTF-8"))
         assertEquals("application/x-www-form-urlencoded; charset=UTF-8", connection.getRequestProperty("Content-Type"))
+        assertEquals(
+            listOf("application/x-www-form-urlencoded; charset=UTF-8"),
+            connection.requestProperties.filterKeys { it.equals("Content-Type", ignoreCase = true) }.values.flatten(),
+        )
         assertEquals("POST", connection.requestMethod)
         assertFalse(connection.instanceFollowRedirects)
         assertFalse(connection.useCaches)
         assertTrue(connection.disconnected)
+    }
+
+    @Test
+    fun `raw device configuration upload explicitly labels unchanged protobuf bytes`() {
+        val connection = FakeConnection()
+        var opened: URI? = null
+        val client = PersonalPlayHttpClient { uri -> opened = uri; connection }
+        val headers = mapOf("Accept" to "application/x-protobuf")
+        val protobuf = byteArrayOf(0x0a, 0x05, 0x08, 0x80.toByte(), 0x01, 0x10, 0x00)
+
+        client.post("https://android.clients.google.com/fdfe/uploadDeviceConfig", headers, protobuf)
+
+        assertEquals("/fdfe/uploadDeviceConfig", opened!!.path)
+        assertEquals("application/x-protobuffer", connection.getRequestProperty("Content-Type"))
+        assertEquals("application/x-protobuf", connection.getRequestProperty("Accept"))
+        assertContentEquals(protobuf, connection.output.toByteArray())
+        assertEquals("POST", connection.requestMethod)
+        assertEquals(mapOf("Accept" to "application/x-protobuf"), headers)
+    }
+
+    @Test
+    fun `raw protobuf upload preserves explicit content type regardless of header casing`() {
+        listOf("Content-Type", "content-type", "cOnTeNt-TyPe").forEach { headerName ->
+            val connection = FakeConnection()
+            val client = PersonalPlayHttpClient { connection }
+            val explicitType = "application/x-protobuf; charset=binary"
+            val protobuf = byteArrayOf(0x0a, 0x02, 0x08, 0xff.toByte())
+            val headers = mapOf(headerName to explicitType)
+
+            client.post("https://android.clients.google.com/fdfe/uploadDeviceConfig", headers, protobuf)
+
+            val contentTypeHeaders = connection.requestProperties
+                .filterKeys { it.equals("Content-Type", ignoreCase = true) }
+            assertEquals(setOf(headerName), contentTypeHeaders.keys)
+            assertEquals(listOf(explicitType), contentTypeHeaders.values.flatten())
+            assertContentEquals(protobuf, connection.output.toByteArray())
+            assertEquals(mapOf(headerName to explicitType), headers)
+        }
+    }
+
+    @Test
+    fun `GET requests do not acquire a protobuf request content type`() {
+        val connection = FakeConnection()
+        val client = PersonalPlayHttpClient { connection }
+
+        client.get("https://android.clients.google.com/fdfe/api/userProfile", emptyMap())
+
+        assertEquals("GET", connection.requestMethod)
+        assertTrue(connection.requestProperties.keys.none { it.equals("Content-Type", ignoreCase = true) })
+        assertFalse(connection.doOutput)
+        assertContentEquals(byteArrayOf(), connection.output.toByteArray())
     }
 
     @Test

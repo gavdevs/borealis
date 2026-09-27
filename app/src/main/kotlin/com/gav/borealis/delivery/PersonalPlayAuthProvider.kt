@@ -377,8 +377,16 @@ class PersonalPlayHttpClient internal constructor(
     private val status = MutableStateFlow(0)
     override val responseCode: StateFlow<Int> = status.asStateFlow()
 
-    override fun post(url: String, headers: Map<String, String>, body: ByteArray): PlayResponse =
-        request(url, "POST", headers, body)
+    override fun post(url: String, headers: Map<String, String>, body: ByteArray): PlayResponse {
+        // GPlayAPI uses this overload for protobuf. URLConnection otherwise defaults a
+        // missing content type to form encoding, which mislabels device-config uploads.
+        val requestHeaders = if (headers.keys.any { it.equals("Content-Type", ignoreCase = true) }) {
+            headers
+        } else {
+            headers + ("Content-Type" to "application/x-protobuffer")
+        }
+        return request(url, "POST", requestHeaders, body)
+    }
 
     override fun post(url: String, headers: Map<String, String>, params: Map<String, String>): PlayResponse =
         if (url == GOOGLE_ANDROID_AUTH_URL) {
