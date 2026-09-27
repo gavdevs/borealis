@@ -47,6 +47,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-android
+      - name: Verify release and prerelease policy
+        run: python3 -B -m unittest discover -s scripts -p 'test_release*.py'
       - name: Verify phone-local sign-in policy and credential encryption
         run: >-
           ./gradlew --no-daemon --max-workers=1 -p .ci/light-sdk
@@ -56,6 +58,7 @@ jobs:
           ./gradlew --no-daemon --max-workers=1
           -p .ci/light-sdk/plugin test
           --tests com.thelightphone.plugin.LightSdkPluginValidationTest
+          --tests com.thelightphone.plugin.LightToolMetadataTest
       - name: Unit tests, debug APK, and dependency provenance
         run: >-
           ./gradlew --no-daemon --max-workers=1

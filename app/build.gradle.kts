@@ -16,6 +16,14 @@ plugins {
 val lightSdkPath = providers.gradleProperty("borealis.sdkPath").getOrElse("../light-sdk")
 val releaseKeystorePath = providers.environmentVariable("BOREALIS_RELEASE_KEYSTORE").orNull
 val companionUrl = providers.gradleProperty("borealis.companionUrl").getOrElse("http://10.0.2.2:8787")
+val fastPrerelease = providers.gradleProperty("borealis.fastPrerelease").map {
+    require(it == "true" || it == "false") { "borealis.fastPrerelease must be true or false" }
+    it == "true"
+}.getOrElse(false)
+val prereleaseVersionPattern = Regex("""(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)-(alpha|beta|rc)\.[1-9][0-9]*""")
+require(!fastPrerelease || prereleaseVersionPattern.matches(android.defaultConfig.versionName.orEmpty())) {
+    "Fast prerelease builds require an alpha.N, beta.N, or rc.N version in lighttool.toml"
+}
 
 fun buildConfigUrl(value: String): String {
     require(value.none { it == '"' || it == '\\' || it.isISOControl() }) { "Build URL contains unsafe characters" }
@@ -39,6 +47,14 @@ val validateReleaseConfiguration = tasks.register("validateReleaseConfiguration"
         }
         val keystorePath = releaseKeystorePath?.takeIf { it.isNotBlank() }
             ?: error("BOREALIS_RELEASE_KEYSTORE is required for release builds; development-key fallback is disabled")
+        check(fastPrerelease == prereleaseVersionPattern.matches(android.defaultConfig.versionName.orEmpty())) {
+            "Prerelease versions require borealis.fastPrerelease=true; stable versions must use the minified release lane"
+        }
+        val releaseBuild = android.buildTypes.getByName("release")
+        check(!releaseBuild.isDebuggable && releaseBuild.isMinifyEnabled == !fastPrerelease &&
+            releaseBuild.isShrinkResources == !fastPrerelease) {
+            "Release build flags do not match the stable/fast-prerelease policy"
+        }
         val keystoreFile = file(keystorePath)
         check(keystoreFile.isFile) { "Release keystore does not exist" }
         val devFile = rootProject.file("$lightSdkPath/sdk/keys/lightsdk-dev.jks")
@@ -121,8 +137,9 @@ android {
             signingConfig = signingConfigs.getByName("lightsdkDev")
         }
         getByName("release") {
-            isMinifyEnabled = true
-            isShrinkResources = true
+            isDebuggable = false
+            isMinifyEnabled = !fastPrerelease
+            isShrinkResources = !fastPrerelease
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
             signingConfig = signingConfigs.findByName("release")
         }
@@ -136,6 +153,34 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
+tasks.register("writeReleaseBuildMetadata") {
+    group = "verification"
+    description = "Record the actual release build flags for artifact verification."
+    dependsOn("assembleRelease")
+    val report = layout.buildDirectory.file("reports/release-build.json")
+    outputs.file(report)
+    // Always regenerate alongside the APK, including a rerun with different flags.
+    outputs.upToDateWhen { false }
+    doLast {
+        val releaseBuild = android.buildTypes.getByName("release")
+        val target = report.get().asFile
+        target.parentFile.mkdirs()
+        target.writeText("""
+            {
+              "schemaVersion": 1,
+              "variant": "release",
+              "versionName": ${buildConfigUrl(android.defaultConfig.versionName.orEmpty())},
+              "versionCode": ${android.defaultConfig.versionCode},
+              "companionUrl": ${buildConfigUrl(companionUrl)},
+              "fastPrerelease": $fastPrerelease,
+              "minified": ${releaseBuild.isMinifyEnabled},
+              "shrinkResources": ${releaseBuild.isShrinkResources},
+              "debuggable": ${releaseBuild.isDebuggable}
+            }
+        """.trimIndent() + "\n")
     }
 }
 

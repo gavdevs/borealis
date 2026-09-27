@@ -15,11 +15,13 @@ import subprocess
 import tarfile
 import tomllib
 from urllib.request import urlopen
+from release_policy import (
+    COMPANION_URL, release_notes, release_policy, validate_apk_badging, validate_build_metadata,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 SDK_REVISION = '52fbc5a8aedbd3c4c88037580709e53540086229'
 GPLAY_REVISION = '18ec2bd74995d30e500b756359a4de3e37976f03'
-COMPANION_URL = 'https://borealis.loosewire.dev'
 output = ROOT / 'release-output'
 output.mkdir(exist_ok=True)
 sdk = ROOT / '.ci/light-sdk'
@@ -53,6 +55,13 @@ commit = git(ROOT, 'rev-parse', 'HEAD')
 tag = f"v{tool['versionName']}"
 if os.environ.get('RELEASE_TAG') != tag:
     raise SystemExit('Tag and APK version do not match.')
+try:
+    policy = release_policy(tag, tool)
+    build = validate_build_metadata(
+        json.loads((ROOT / 'app/build/reports/release-build.json').read_text()), policy, tool,
+    )
+except ValueError as error:
+    raise SystemExit(str(error)) from error
 apk_dir = ROOT / 'app/build/outputs/apk/release'
 apk_metadata = json.loads((apk_dir / 'output-metadata.json').read_text())
 elements = apk_metadata['elements']
@@ -63,7 +72,13 @@ if element['versionCode'] != tool['versionCode'] or element['versionName'] != to
     raise SystemExit('APK metadata does not match lighttool.toml.')
 apk = (apk_dir / element['outputFile']).resolve()
 apk.relative_to(apk_dir.resolve())
-signer = Path(os.environ['ANDROID_HOME']) / 'build-tools/36.0.0/apksigner'
+build_tools = Path(os.environ['ANDROID_HOME']) / 'build-tools/36.0.0'
+badging = subprocess.check_output([str(build_tools / 'aapt2'), 'dump', 'badging', str(apk)], text=True)
+try:
+    validate_apk_badging(badging, tool)
+except ValueError as error:
+    raise SystemExit(str(error)) from error
+signer = build_tools / 'apksigner'
 verification = subprocess.check_output(
     [str(signer), 'verify', '--verbose', '--print-certs', '--min-sdk-version', '34', str(apk)], text=True,
 )
@@ -74,6 +89,7 @@ if not re.fullmatch(r'[0-9a-f]{64}', expected) or [fingerprint.lower() for finge
 apk_name = f"borealis-{tag}-vc{tool['versionCode']}.apk"
 shutil.copyfile(apk, output / apk_name)
 (output / 'apk-signature.txt').write_text(verification)
+(output / 'release-build.json').write_text(json.dumps(build, indent=2) + '\n')
 
 subprocess.run(['git', 'archive', '--format=tar.gz', '--prefix=borealis/', f'--output={output / "borealis-source.tar.gz"}', commit], cwd=ROOT, check=True)
 subprocess.run(['git', 'archive', '--format=tar.gz', '--prefix=light-sdk/', f'--output={output / "light-sdk-base-source.tar.gz"}', SDK_REVISION], cwd=sdk, check=True)
@@ -116,11 +132,14 @@ if not required_coordinates <= {row['coordinate'] for row in dependency_rows}:
 if not all(row['artifact'] and re.fullmatch(r'[0-9a-f]{64}', row['sha256'] or '') for row in dependency_rows):
     raise SystemExit('Dependency provenance contains an invalid artifact hash.')
 provenance = {
-    'schemaVersion': 1,
+    'schemaVersion': 2,
     'lane': 'experimental-sideloaded',
     'repository': 'https://github.com/gavdevs/borealis',
     'commit': commit,
     'tag': tag,
+    'channel': policy['channel'],
+    'prerelease': policy['prerelease'],
+    'build': build,
     'applicationId': tool['id'],
     'versionCode': tool['versionCode'],
     'companionUrl': COMPANION_URL,
@@ -141,23 +160,7 @@ provenance = {
     'workflowRun': f"https://github.com/{os.environ.get('GITHUB_REPOSITORY', 'gavdevs/borealis')}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}",
 }
 (output / 'provenance.json').write_text(json.dumps(provenance, indent=2) + '\n')
-(output / 'RELEASE-NOTES.md').write_text(f'''# Borealis {tag}
-
-Experimental, sideload-only Light Phone III build. Not an approved Light tool.
-
-- Companion: {COMPANION_URL}
-- Source revision: `{commit}`
-- Android version code: `{tool['versionCode']}`
-- Signing certificate SHA-256: `{expected}`
-
-Review the APK on physical hardware before publishing this draft. A development-key
-installation cannot update in place to the dedicated release key; plan the first
-signed installation and preserve any needed local data before uninstalling.
-
-Keep the source archives, SDK patch, dependency manifest, build instructions,
-and license notices together with the APK when distributing it. This private
-GitHub draft does not make source available to recipients outside this repository.
-''')
+(output / 'RELEASE-NOTES.md').write_text(release_notes(tag, tool, commit, expected, policy))
 assets = sorted(path for path in output.iterdir() if path.is_file() and path.name != 'SHA256SUMS')
 (output / 'SHA256SUMS').write_text(''.join(f'{sha256(path)}  {path.name}\n' for path in assets))
 print(f'Packaged {apk_name} with source, signature verification, and {len(assets)} checksummed assets.')

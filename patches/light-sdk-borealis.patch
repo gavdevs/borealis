@@ -77,10 +77,31 @@ index 594de64443f63cbbbe0d7582e9cd9160d7925f0f..dbf2edd2a644f3af65fecce16980df3e
                      val tag = if (isKsp) "unexpected resolved KSP dependency" else "unexpected resolved dependency — possible substitution"
                      violations.add("  ${config.name}: $resolvedCoord:${dep.moduleVersion} ($tag)")
 diff --git a/plugin/src/main/kotlin/com/thelightphone/plugin/LightToolMetadata.kt b/plugin/src/main/kotlin/com/thelightphone/plugin/LightToolMetadata.kt
-index ca15a3fdcb1c38a475762eadbe4a814d5ff7ae8b..a9bc93a51c978b25cc2c0d6970eb4a1cbb3d1c7a 100644
+index ca15a3fdcb1c38a475762eadbe4a814d5ff7ae8b..d0055c522502820e8c075645de3d83d30e1be820 100644
 --- a/plugin/src/main/kotlin/com/thelightphone/plugin/LightToolMetadata.kt
 +++ b/plugin/src/main/kotlin/com/thelightphone/plugin/LightToolMetadata.kt
-@@ -200,8 +200,12 @@ object LightToolPolicy {
+@@ -96,7 +96,8 @@ data class LightToolMetadata(
+         private fun validateVersionName(value: String?): String {
+             val v = value ?: throw LightToolMetadataException("tool.versionName is required")
+             require(LightToolPolicy.VERSION_NAME_PATTERN.matches(v)) {
+-                "tool.versionName must be major.minor.patch semver; got '$v'"
++                "tool.versionName must be major.minor.patch, optionally followed by " +
++                        "-alpha.N, -beta.N, or -rc.N (N >= 1, no leading zeroes); got '$v'"
+             }
+             return v
+         }
+@@ -179,8 +180,9 @@ class LightToolMetadataException(message: String) : RuntimeException(message)
+ object LightToolPolicy {
+     val TOOL_ID_PATTERN: Regex = Regex("^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$")
+     val ICON_PATTERN: Regex = Regex("^@[a-z]+/[a-z0-9_]+$")
++    // Sideload builds may use numbered alpha, beta, or release-candidate versions.
+     val VERSION_NAME_PATTERN: Regex =
+-        Regex("""^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$""")
++        Regex("""^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-(?:alpha|beta|rc)\.[1-9][0-9]*)?$""")
+     val TOOL_LABEL_PATTERN: Regex = Regex("^[^\\x00-\\x1f<>]{1,50}$")
+     const val MAX_VERSION_CODE: Int = 2_100_000_000
+     val ALLOWED_ORIENTATIONS: Set<String> = setOf("portrait")
+@@ -200,8 +202,12 @@ object LightToolPolicy {
      )
  
      const val DETACHED_AUDIO: String = "detached-audio"
@@ -94,7 +115,7 @@ index ca15a3fdcb1c38a475762eadbe4a814d5ff7ae8b..a9bc93a51c978b25cc2c0d6970eb4a1c
  
      /**
       * Permissions a capability contributes to the generated manifest. These are
-@@ -214,6 +218,11 @@ object LightToolPolicy {
+@@ -214,6 +220,11 @@ object LightToolPolicy {
              "android.permission.FOREGROUND_SERVICE",
              "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
          ),
@@ -178,7 +199,7 @@ index b3ab6c0cb5db0c761c96f7d6bc2a7965f13ca841..f493c590b38a5b63103355b0b14219d3
      // INTERNAL_CONFIG_PREFIXES no longer skips ksp
      // ---------------------------------------------------------------------
 diff --git a/plugin/src/test/kotlin/com/thelightphone/plugin/LightToolMetadataTest.kt b/plugin/src/test/kotlin/com/thelightphone/plugin/LightToolMetadataTest.kt
-index dde2aa033e80cf425ca4b5847ee06d67d593dedd..474b3089113573204927e6900644bd5fa4acdad8 100644
+index dde2aa033e80cf425ca4b5847ee06d67d593dedd..f21b8464a24788db52b919fdccdffa109068a689 100644
 --- a/plugin/src/test/kotlin/com/thelightphone/plugin/LightToolMetadataTest.kt
 +++ b/plugin/src/test/kotlin/com/thelightphone/plugin/LightToolMetadataTest.kt
 @@ -139,6 +139,40 @@ class LightToolMetadataTest {
@@ -222,6 +243,63 @@ index dde2aa033e80cf425ca4b5847ee06d67d593dedd..474b3089113573204927e6900644bd5f
      @Test
      fun `missing file fails`(@TempDir dir: Path) {
          val file = dir.resolve("lighttool.toml").toFile()
+@@ -224,13 +258,13 @@ class LightToolMetadataTest {
+     @Test
+-    fun `versionName with pre-release suffix fails`(@TempDir dir: Path) {
++    fun `versionName with unnumbered pre-release suffix fails`(@TempDir dir: Path) {
+         val file = writeToml(dir, """
+             [tool]
+             id = "com.example.mytool"
+             label = "X"
+             versionCode = 1
+-            versionName = "1.2.3-rc.1"
++            versionName = "1.2.3-beta"
+             serverPackage = "com.lightos"
+         """.trimIndent())
+         val ex = assertThrows<LightToolMetadataException> { LightToolMetadata.parse(file) }
+         assert(ex.message!!.contains("versionName"))
+     }
+@@ -238,3 +272,40 @@ class LightToolMetadataTest {
++    @Test
++    fun `plain and numbered pre-release versions are accepted`(@TempDir dir: Path) {
++        listOf("0.0.0", "1.2.3", "0.1.6-alpha.1", "1.2.3-beta.12", "1.2.3-rc.1").forEach { version ->
++            val file = writeToml(dir, """
++                [tool]
++                id = "com.example.mytool"
++                label = "X"
++                versionCode = 1
++                versionName = "$version"
++                serverPackage = "com.lightos"
++            """.trimIndent())
++            assertEquals(version, LightToolMetadata.parse(file).versionName)
++        }
++    }
++
++    @Test
++    fun `unsupported pre-release and noncanonical version numbers fail`(@TempDir dir: Path) {
++        listOf(
++            "1.2.3-alpha", "1.2.3-rc", "1.2.3-beta.", "1.2.3-beta.0", "1.2.3-beta.01",
++            "1.2.3-beta.-1", "1.2.3-beta.+1", "1.2.3-beta.1.2", "1.2.3-beta.1-rc.1",
++            "1.2.3-BETA.1", "1.2.3-dev.1", "1.2.3+build.1", "1.2.3-beta.1+build.1",
++            "01.2.3", "1.02.3", "1.2.03", "01.2.3-beta.1", "1.02.3-beta.1", "1.2.03-beta.1",
++            "1.2.3-beta.١", "١.2.3", " 1.2.3-beta.1", "1.2.3-beta.1 ",
++        ).forEach { version ->
++            val file = writeToml(dir, """
++                [tool]
++                id = "com.example.mytool"
++                label = "X"
++                versionCode = 1
++                versionName = "$version"
++                serverPackage = "com.lightos"
++            """.trimIndent())
++            val ex = assertThrows<LightToolMetadataException> { LightToolMetadata.parse(file) }
++            assert(ex.message!!.contains("versionName")) { "accepted or misreported $version: ${ex.message}" }
++        }
++    }
++
+     @Test
+     fun `label with angle bracket fails`(@TempDir dir: Path) {
+         val file = writeToml(dir, """
 diff --git a/plugin/src/test/kotlin/com/thelightphone/plugin/ManifestGeneratorTest.kt b/plugin/src/test/kotlin/com/thelightphone/plugin/ManifestGeneratorTest.kt
 index f57fd0ce866d0abfdda2b8567932e77a7a6599a8..644c72d91e29cb754a43489b35dbb8a5d8314bc8 100644
 --- a/plugin/src/test/kotlin/com/thelightphone/plugin/ManifestGeneratorTest.kt

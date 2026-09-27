@@ -1,4 +1,4 @@
-name: Draft Android release
+name: Android release
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing vX.Y.Z tag whose version matches app/lighttool.toml
+        description: Existing vX.Y.Z or vX.Y.Z-alpha.N/beta.N/rc.N tag matching app/lighttool.toml
         required: true
         type: string
 
@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   release:
-    if: github.repository == 'gavdevs/borealis'
+    if: github.repository == 'gavdevs/borealis' && github.event.repository.private == true
     runs-on: ubuntu-24.04
     timeout-minutes: 50
     permissions:
@@ -35,11 +35,17 @@ jobs:
       - name: Validate tag, version, and main-branch ancestry
         id: metadata
         run: python3 scripts/release-metadata.py
+      - name: Verify stable and prerelease routing
+        run: python3 -B -m unittest discover -s scripts -p 'test_release_*.py'
       - uses: ./.github/actions/setup-android
       - name: Verify phone-local sign-in policy and credential encryption
         run: >-
           ./gradlew --no-daemon --max-workers=1 -p .ci/light-sdk
           :sdk:client:testDebugUnitTest --tests 'com.thelightphone.sdk.auth.*'
+      - name: Verify tagged-version SDK metadata policy
+        run: >-
+          ./gradlew --no-daemon --max-workers=1 -p .ci/light-sdk/plugin
+          test --tests com.thelightphone.plugin.LightToolMetadataTest
       - name: Restore the dedicated release keystore
         env:
           BOREALIS_RELEASE_KEYSTORE_BASE64: ${{ secrets.BOREALIS_RELEASE_KEYSTORE_BASE64 }}
@@ -68,12 +74,14 @@ jobs:
           BOREALIS_RELEASE_KEY_PASSWORD: ${{ secrets.BOREALIS_RELEASE_KEY_PASSWORD }}
           BOREALIS_RELEASE_KEY_ALIAS: ${{ secrets.BOREALIS_RELEASE_KEY_ALIAS }}
           BOREALIS_RELEASE_CERT_SHA256: ${{ secrets.BOREALIS_RELEASE_CERT_SHA256 }}
+          BOREALIS_FAST_PRERELEASE: ${{ steps.metadata.outputs.fast_prerelease }}
         run: >-
           ./gradlew --no-daemon --max-workers=1
           -Pborealis.sdkPath=.ci/light-sdk
           -Pborealis.companionUrl=https://borealis.loosewire.dev
+          -Pborealis.fastPrerelease=$BOREALIS_FAST_PRERELEASE
           --init-script scripts/release-provenance.init.gradle.kts
-          :app:testDebugUnitTest :app:assembleRelease :app:writeReleaseDependencyProvenance
+          :app:testDebugUnitTest :app:assembleRelease :app:writeReleaseBuildMetadata :app:writeReleaseDependencyProvenance
       - name: Verify APK identity and package corresponding source
         env:
           BOREALIS_RELEASE_CERT_SHA256: ${{ secrets.BOREALIS_RELEASE_CERT_SHA256 }}
@@ -87,14 +95,27 @@ jobs:
           from pathlib import Path
           (Path(os.environ['RUNNER_TEMP']) / 'borealis-release.p12').unlink(missing_ok=True)
           PY
-      - name: Create private draft release
+      - name: Create stable draft or publish testing prerelease
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          BOREALIS_PRERELEASE: ${{ steps.metadata.outputs.prerelease }}
         shell: bash
         run: |
           set -euo pipefail
-          gh release create "$RELEASE_TAG" release-output/* --verify-tag --draft \
+          if [[ "$(gh repo view "$GH_REPO" --json isPrivate --jq .isPrivate)" != 'true' ]]; then
+            echo 'Borealis release publication requires the repository to remain private.' >&2
+            exit 1
+          fi
+          if [[ "$BOREALIS_PRERELEASE" == 'true' ]]; then
+            release_flags=(--prerelease --latest=false)
+          elif [[ "$BOREALIS_PRERELEASE" == 'false' ]]; then
+            release_flags=(--draft)
+          else
+            echo 'Missing validated release channel.' >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" release-output/* --verify-tag "${release_flags[@]}" \
             --title "Borealis $RELEASE_TAG" --notes-file release-output/RELEASE-NOTES.md
       - name: Retain packaged release artifacts for troubleshooting
         if: ${{ !cancelled() && hashFiles('release-output/SHA256SUMS') != '' }}

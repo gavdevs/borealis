@@ -17,11 +17,15 @@ approval. The repository and its GitHub releases remain private.
   Turso migrations remain deliberate/manual. The Worker is live on Workers Free
   and passed hosted HTTPS checks on 2026-09-26 following a Wrangler deployment.
   The native GitHub connection remains unverified. See [deployment.md](deployment.md).
-- `Draft Android release`: a `vX.Y.Z` tag push, or a manual run naming an existing
-  tag. The tag must match `app/lighttool.toml` and refer to a commit on `main`.
-  Produces a **draft**, never an automatically published release. Uses repository
-  signing secrets; no GitHub environment or paid deployment-protection feature
-  is required. Review the draft before publishing it.
+- `Android release`: a version tag push, or a manual run naming an existing tag.
+  The tag must exactly match `app/lighttool.toml` and refer to a commit on `main`.
+  Stable `vX.Y.Z` tags produce a minified **draft** for review. Numbered
+  `vX.Y.Z-alpha.N`, `-beta.N`, and `-rc.N` tags produce a non-minified,
+  non-debuggable APK and automatically publish a **prerelease inside the private
+  repository**, never marking it latest. Both lanes use the same dedicated
+  signing identity, production companion URL, SDK/app tests, source/license
+  bundles, and dependency provenance. Repository signing secrets are used; no
+  GitHub environment or paid deployment-protection feature is required.
 
 External GitHub actions are pinned to full commit SHAs verified against upstream release
 tags. Checkout does not persist repository credentials. Pull requests never receive
@@ -52,41 +56,58 @@ Never regenerate the key merely to repair a failed pipeline.
 
 Release Gradle tasks reject missing credentials, the public SDK development key,
 Android debug certificates, an unexpected signing fingerprint, unsigned SDK mode,
-and nonproduction URLs. Debug builds still use the SDK development key. The first
+nonproduction URLs, debuggable APKs, and mismatched stable/prerelease build flags.
+Only numbered prerelease versions permit `-Pborealis.fastPrerelease=true`; that
+property disables code/resource shrinking on the existing release variant and
+does not enable Android or WebView debugging. Stable releases require shrinking.
+Debug builds still use the SDK development key. The first
 dedicated-key APK cannot update an existing development-key installation in place;
 plan the transition before uninstalling anything, because uninstalling loses local
 app state. See [Android's signing guidance](https://developer.android.com/studio/publish/app-signing).
 
-## Create a draft
+## Create a stable draft or testing prerelease
 
 1. Review and commit the intended release changes on `main`. Set the semantic
    `versionName` and a strictly increasing `versionCode` in `app/lighttool.toml`
-   before each new release tag. The current candidate is `0.1.5`, version code
-   `6`, with an explicit protobuf content type for raw Play requests. This targets
-   the device-config HTTP 400 observed on the LP3; live verification remains required.
-   Never move a failed tag onto fixed source.
-2. Push `main` and wait for CI to pass on that exact commit. The release workflow
-   checks main-branch ancestry but does not itself require a successful CI run.
+   before each new release tag, including prereleases. The first fast candidate
+   is `0.1.6-alpha.1`, version code `7`. Its authentication, HTTP transport, and
+   device profile deliberately remain unchanged from v0.1.5; disabling release
+   optimization is a controlled comparison for the still-observed device-config
+   HTTP 400, not a claimed fix. Never move a failed tag onto fixed source.
+2. Push the reviewed commit to `main`. For stable release candidates, wait for
+   full CI to pass on that exact commit. A testing prerelease can start as soon
+   as the commit is on `main`: its release workflow independently runs the
+   release-policy tests, SDK authentication/metadata tests, and app unit tests,
+   without waiting for the separate companion CI job. It does not bypass those
+   Android checks or require a local Android build.
 3. Create and push an immutable tag matching `v<versionName>` at the checked
    commit. For the current candidate, after confirming `HEAD` is that commit:
 
    ```sh
-   git tag -a v0.1.5 -m "Borealis v0.1.5"
-   git push origin refs/tags/v0.1.5
+   git tag -a v0.1.6-alpha.1 -m "Borealis v0.1.6-alpha.1"
+   git push origin refs/tags/v0.1.6-alpha.1
    ```
 
-   The tag push starts `Draft Android release` on GitHub-hosted runners. A manual
+   The tag push starts `Android release` on GitHub-hosted runners. A manual
    run can retry the same existing tag if no release for it exists:
 
    ```sh
-   gh workflow run release.yml --ref main -f tag=v0.1.1
+   gh workflow run release.yml --ref main -f tag=v0.1.6-alpha.1
    ```
 
-4. Review the resulting private draft and verify the APK on a physical Light Phone.
+4. Download the resulting private prerelease (or stable draft) and verify the APK
+   on a physical Light Phone. The unchanged package/signing identity supports an
+   in-place update without clearing pairing or account data.
    Build/test success alone does not establish package installation or banking-app
    compatibility on the phone.
-5. Publish the draft only after reviewing the artifact, source bundle, and notices.
-   Publishing a release in this repository does **not** make the private repo public.
+5. Stable drafts still require review before publication. Prereleases publish
+   automatically for testing, with `--prerelease --latest=false`. The workflow
+   refuses publication if the repository is no longer private. Publishing a
+   release in this repository does **not** make the private repo public.
+
+The fast lane skips release optimization and the wait for companion CI, not
+Kotlin compilation, signing, or source packaging. It still builds on GitHub and
+installs an APK; it is not hot reload and does not promise an instant build.
 
 The workflow intentionally fails if a release for the tag already exists. For an
 interrupted draft creation, inspect that draft and the run artifacts before deciding
@@ -95,11 +116,12 @@ overwrite a published release or move an existing release tag.
 
 ## Artifacts and source
 
-Every successful draft contains:
+Every successful draft or prerelease contains:
 
 - `borealis-vX.Y.Z-vcN.apk`, verified with Android `apksigner` against the pinned
   certificate, plus `apk-signature.txt`.
-- `SHA256SUMS`, `provenance.json`, and resolved Android dependency coordinates,
+- `SHA256SUMS`, `provenance.json`, the verified build flags in `release-build.json`,
+  and resolved Android dependency coordinates,
   artifact names, and SHA-256 digests in `runtime-dependencies.tsv`.
 - Committed Borealis source, exact Light SDK base source, the Borealis SDK patch,
   and exact GPlayAPI 3.6.4 source including upstream build files and licenses.
@@ -141,14 +163,22 @@ python3 scripts/apply-sdk-extension.py ../light-sdk
 ```
 
 For a signed release, securely provide your own release keystore path/passwords/
-alias/fingerprint in the environment variables above, then run:
+alias/fingerprint in the environment variables above. For the fast prerelease
+source, run:
 
 ```sh
 ./gradlew --no-daemon --max-workers=1 \
   -Pborealis.sdkPath=../light-sdk \
   -Pborealis.companionUrl=https://borealis.loosewire.dev \
-  :app:assembleRelease
+  -Pborealis.fastPrerelease=true \
+  :app:assembleRelease :app:writeReleaseBuildMetadata
 ```
+
+For a stable version, omit `-Pborealis.fastPrerelease=true` (or set it to `false`).
+Prerelease versions require `true` for release packaging; stable versions forbid
+it. The signed APK remains a release variant and is never debuggable. The recorded
+build metadata is checked against the tag, and `aapt2` independently checks the
+packaged APK's identity and debug flag before publication.
 
 Using your own signing key produces your own build, not an update signed with the
 maintainer's identity. A fork using another companion domain must explicitly change
