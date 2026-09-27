@@ -1,5 +1,5 @@
 name: Set up sideloaded Android build
-description: Check out and patch the exact Light SDK, then install the Android toolchain.
+description: Check out, patch, and extend the exact Light SDK, then install the Android toolchain.
 runs:
   using: composite
   steps:
@@ -20,6 +20,12 @@ runs:
         test "$(git -C .ci/light-sdk rev-parse HEAD)" = '52fbc5a8aedbd3c4c88037580709e53540086229'
         git -C .ci/light-sdk apply --check "$GITHUB_WORKSPACE/patches/light-sdk-borealis.patch"
         git -C .ci/light-sdk apply "$GITHUB_WORKSPACE/patches/light-sdk-borealis.patch"
+    - name: Apply the checked-in Borealis SDK extension
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 -B -m unittest discover -s scripts -p test_apply_sdk_extension.py
+        python3 -B scripts/apply-sdk-extension.py .ci/light-sdk
     - uses: gradle/actions/setup-gradle@748248ddd2a24f49513d8f472f81c3a07d4d50e1 # v4.4.4
       with:
         cache-read-only: ${{ github.event_name == 'pull_request' }}

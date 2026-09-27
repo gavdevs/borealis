@@ -61,17 +61,16 @@ app state. See [Android's signing guidance](https://developer.android.com/studio
 
 1. Review and commit the intended release changes on `main`. Set the semantic
    `versionName` and a strictly increasing `versionCode` in `app/lighttool.toml`
-   before each new release tag. The current candidate is `0.1.1`, version code
-   `2`: the immutable `v0.1.0` tag exposed a dependency-provenance pipeline bug
-   and did not produce a draft APK. Never move a failed tag onto fixed source.
+   before each new release tag. The current candidate is `0.1.3`, version code
+   `4`, the phone-local Google sign-in prototype. Never move a failed tag onto fixed source.
 2. Push `main` and wait for CI to pass on that exact commit. The release workflow
    checks main-branch ancestry but does not itself require a successful CI run.
 3. Create and push an immutable tag matching `v<versionName>` at the checked
    commit. For the current candidate, after confirming `HEAD` is that commit:
 
    ```sh
-   git tag -a v0.1.1 -m "Borealis v0.1.1"
-   git push origin refs/tags/v0.1.1
+   git tag -a v0.1.3 -m "Borealis v0.1.3"
+   git push origin refs/tags/v0.1.3
    ```
 
    The tag push starts `Draft Android release` on GitHub-hosted runners. A manual
@@ -109,7 +108,9 @@ Pinned inputs:
 
 - Light SDK: `gavdevs/light-sdk`, commit
   `52fbc5a8aedbd3c4c88037580709e53540086229`, plus
-  `patches/light-sdk-borealis.patch`.
+  `patches/light-sdk-borealis.patch` and the committed `sdk-extension/client`
+  source overlay. The overlay is in `borealis-source.tar.gz`; apply it after the
+  installer patch with `scripts/apply-sdk-extension.py`.
 - GPlayAPI: `com.auroraoss:gplayapi:3.6.4`; upstream source commit
   `18ec2bd74995d30e500b756359a4de3e37976f03` from AuroraOSS's GitLab repository.
 - JDK 17, repository Gradle 9.0.0 wrapper, Android platform 36, and build-tools
@@ -133,6 +134,7 @@ directories. Apply the supplied patch to the SDK base, from the Borealis directo
 ```sh
 git -C ../light-sdk apply --check ../borealis/patches/light-sdk-borealis.patch
 git -C ../light-sdk apply ../borealis/patches/light-sdk-borealis.patch
+python3 scripts/apply-sdk-extension.py ../light-sdk
 ./gradlew --no-daemon --max-workers=1 -Pborealis.sdkPath=../light-sdk :app:testDebugUnitTest :app:assembleDebug
 ```
 

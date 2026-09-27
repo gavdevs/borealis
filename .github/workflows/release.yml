@@ -36,6 +36,10 @@ jobs:
         id: metadata
         run: python3 scripts/release-metadata.py
       - uses: ./.github/actions/setup-android
+      - name: Verify phone-local sign-in policy and credential encryption
+        run: >-
+          ./gradlew --no-daemon --max-workers=1 -p .ci/light-sdk
+          :sdk:client:testDebugUnitTest --tests 'com.thelightphone.sdk.auth.*'
       - name: Restore the dedicated release keystore
         env:
           BOREALIS_RELEASE_KEYSTORE_BASE64: ${{ secrets.BOREALIS_RELEASE_KEYSTORE_BASE64 }}

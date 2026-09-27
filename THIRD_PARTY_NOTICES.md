@@ -11,6 +11,17 @@ Borealis uses `com.auroraoss:gplayapi:3.6.4` and a device-properties profile der
 
 The full GPL version 3 license text is included in `LICENSE`. When distributing a Borealis binary, distribute the corresponding Borealis source and the exact GPlayAPI source used to build it, including build instructions and these notices.
 
+## Aurora Store sign-in flow
+
+The experimental phone-local Google account setup follows Aurora Store's native
+WebView flow and account-email selector, adapted with stricter navigation, storage,
+and logging controls.
+
+- Project: https://github.com/AuroraOSS/AuroraStore
+- Reference: `app/src/main/java/com/aurora/store/compose/ui/accounts/GoogleLoginScreen.kt`
+- Copyright: 2026 Aurora OSS
+- License: GNU General Public License v3.0 or later (included in `LICENSE`)
+
 ## Light SDK
 
 Borealis is built against a modified checkout of the Light SDK.

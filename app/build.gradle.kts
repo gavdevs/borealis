@@ -16,7 +16,6 @@ plugins {
 val lightSdkPath = providers.gradleProperty("borealis.sdkPath").getOrElse("../light-sdk")
 val releaseKeystorePath = providers.environmentVariable("BOREALIS_RELEASE_KEYSTORE").orNull
 val companionUrl = providers.gradleProperty("borealis.companionUrl").getOrElse("http://10.0.2.2:8787")
-val dispenserUrl = providers.gradleProperty("borealis.dispenserUrl").getOrElse("https://auroraoss.com/api/auth")
 
 fun buildConfigUrl(value: String): String {
     require(value.none { it == '"' || it == '\\' || it.isISOControl() }) { "Build URL contains unsafe characters" }
@@ -38,10 +37,6 @@ val validateReleaseConfiguration = tasks.register("validateReleaseConfiguration"
             (service.path.isNullOrEmpty() || service.path == "/")) {
             "Release companion URL must be https://borealis.loosewire.dev without credentials, port, query, or fragment"
         }
-        val delivery = URI(dispenserUrl)
-        check(delivery.scheme == "https" && delivery.host == "auroraoss.com" &&
-            delivery.port == -1 && delivery.userInfo == null && delivery.query == null && delivery.fragment == null &&
-            delivery.path == "/api/auth") { "Release dispenser URL must be https://auroraoss.com/api/auth" }
         val keystorePath = releaseKeystorePath?.takeIf { it.isNotBlank() }
             ?: error("BOREALIS_RELEASE_KEYSTORE is required for release builds; development-key fallback is disabled")
         val keystoreFile = file(keystorePath)
@@ -114,11 +109,6 @@ android {
             "String",
             "BOREALIS_COMPANION_URL",
             buildConfigUrl(companionUrl),
-        )
-        buildConfigField(
-            "String",
-            "BOREALIS_DISPENSER_URL",
-            buildConfigUrl(dispenserUrl),
         )
     }
 

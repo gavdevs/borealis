@@ -42,6 +42,13 @@ def sha256(path):
 
 if git(sdk, 'rev-parse', 'HEAD') != SDK_REVISION:
     raise SystemExit('Unexpected SDK revision.')
+extension_files = sorted((ROOT / 'sdk-extension/client').rglob('*.kt'))
+if not extension_files:
+    raise SystemExit('SDK extension sources are missing.')
+for source in extension_files:
+    built_source = sdk / 'sdk' / source.relative_to(ROOT / 'sdk-extension')
+    if not built_source.is_file() or sha256(source) != sha256(built_source):
+        raise SystemExit('Built SDK extension differs from the corresponding source.')
 commit = git(ROOT, 'rev-parse', 'HEAD')
 tag = f"v{tool['versionName']}"
 if os.environ.get('RELEASE_TAG') != tag:
@@ -120,7 +127,12 @@ provenance = {
     'apk': apk_name,
     'signingCertificateSha256': expected,
     'sdk': {'repository': 'https://github.com/gavdevs/light-sdk', 'commit': SDK_REVISION,
-            'patchSha256': sha256(output / 'light-sdk-borealis.patch')},
+            'patchSha256': sha256(output / 'light-sdk-borealis.patch'),
+            'extensionInstallerSha256': sha256(ROOT / 'scripts/apply-sdk-extension.py'),
+            'extensionFiles': {
+                str(path.relative_to(ROOT)): sha256(path)
+                for path in extension_files
+            }},
     'gplayapi': {'coordinate': 'com.auroraoss:gplayapi:3.6.4', 'commit': GPLAY_REVISION,
                  'sourceUrl': source_url, 'sourceSha256': sha256(gplay_archive)},
     'tink': {'coordinate': 'com.google.crypto.tink:tink:1.20.0', 'license': 'Apache-2.0',

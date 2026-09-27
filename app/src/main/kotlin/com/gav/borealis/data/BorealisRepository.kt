@@ -27,6 +27,7 @@ class BorealisRepository(
     private val coordinator: BorealisInstallCoordinator,
     private val downloader: PlayArtifactDownloader,
     private val verifier: SignedJobVerifier,
+    private val clearPlayAuthentication: suspend () -> Unit = {},
 ) {
     val canRequestPackageInstalls: Boolean
         get() = installer.canRequestPackageInstalls
@@ -142,6 +143,7 @@ class BorealisRepository(
     }
 
     suspend fun forget() {
+        clearPlayAuthentication()
         store.clearPendingInstall()
         store.forget()
     }
