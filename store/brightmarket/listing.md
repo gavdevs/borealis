@@ -44,9 +44,6 @@ An app being available or installable does not guarantee that it works on Light
 Phone. Updates can require Android confirmation. Borealis needs its hosted
 companion and an internet connection for discovery and delivery.
 
-Web screenshots use fictional demo app names. Phone screenshots are real LP3
-captures. Neither is a promise that a specific banking or other app will work.
-
 Source: [gavdevs/borealis](https://github.com/gavdevs/borealis)
 
 License: GPL-3.0-or-later. Releases include corresponding source, SDK patch,

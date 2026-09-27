@@ -82,8 +82,8 @@ app state. See [Android's signing guidance](https://developer.android.com/studio
    and real download progress plus explicit installation stages. Alpha.3 already
    passed phone-local Google sign-in and saved-session reuse on the LP3; that
    authentication transport and profile are unchanged. Alpha.4 has installed MIKU
-   on the physical LP3. The planned store candidate is `0.1.6`, version code `11`:
-   a minified, normally signed **private draft** that must be verified separately.
+   on the physical LP3. The store release is `0.1.6`, version code `11`:
+   a minified, normally signed build, initially created as a **draft** for review.
    A successful unoptimized alpha does not establish that the minified candidate
    works. Never move a failed tag onto fixed source.
 2. Push the reviewed commit to `main`. For stable release candidates, wait for
@@ -107,7 +107,7 @@ app state. See [Android's signing guidance](https://developer.android.com/studio
    gh workflow run release.yml --ref main -f tag=v0.1.6
    ```
 
-4. Download the resulting private prerelease (or stable draft) and verify the APK
+4. Download the resulting prerelease or draft and verify the APK
    on a physical Light Phone. The unchanged package/signing identity supports an
    in-place update without clearing pairing or account data.
    Build/test success alone does not establish package installation or banking-app

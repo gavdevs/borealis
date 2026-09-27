@@ -1,9 +1,9 @@
 # BrightMarket release kit
 
-Release target: **Borealis v0.1.6**, Android version code **11**,
-package **com.gav.borealis**. The user authorized public GitHub publication on
-2026-09-27. Publication and physical verification status are recorded below once
-the release finishes; this folder alone does not mean BrightMarket has listed it.
+Public release: **[Borealis v0.1.6](https://github.com/gavdevs/borealis/releases/tag/v0.1.6)**,
+Android version code **11**, package **com.gav.borealis**. The signed release is
+installed on the physical LP3 and the repository is public. This kit is ready for
+submission; BrightMarket has not received or accepted a listing through this work.
 
 ## Listing
 
@@ -30,9 +30,9 @@ needed. Numbering deliberately shows phone behavior before the website.
 
 | File | Contents | Capture source |
 | --- | --- | --- |
-| `01-phone-library.png` | Installed apps, available updates, Signed in | Physical LP3, release verification |
+| [01-phone-library.png](../../docs/screenshots/01-phone-library.png) | Installed apps, available updates, Signed in | Physical LP3, v0.1.6, 2026-09-27 |
 | [02-phone-download.png](../../docs/screenshots/02-phone-download.png) | Real download percentage, bytes, split-file count | Physical LP3, alpha.4, 2026-09-27 |
-| `03-phone-google-connected.png` | Saved Google connection, without account identifiers | Physical LP3, release verification |
+| [03-phone-google-connected.png](../../docs/screenshots/03-phone-google-connected.png) | Saved Google connection, without account identifiers | Physical LP3, v0.1.6, 2026-09-27 |
 | [04-web-library.png](../../docs/screenshots/04-web-library.png) | Personal library on desktop | Actual web UI with fictional demo data |
 | [05-web-search.png](../../docs/screenshots/05-web-search.png) | Search and selection before adding | Actual web UI with fictional demo data |
 | [06-web-library-mobile.png](../../docs/screenshots/06-web-library-mobile.png) | Mobile-browser dark theme | Actual web UI with fictional demo data |
@@ -76,6 +76,18 @@ Sources checked 2026-09-27: [submission validator](https://github.com/gi-os/brig
 and [icon discovery](https://github.com/gi-os/brightmarket-index/blob/main/scripts/extract_icons.py).
 
 ## Verification boundary
+
+The v0.1.6 release at `63288da08863a70ee5001fb7ab0033c674599166` passed
+[CI](https://github.com/gavdevs/borealis/actions/runs/36357724823) and the
+[signed release workflow](https://github.com/gavdevs/borealis/actions/runs/36357726943).
+Checks included 80 app tests, 15 SDK authentication tests, release-policy checks,
+and the companion tests/build. All 15 artifact checksums, corresponding-source
+archives, SDK overlay, non-debuggable optimized build flags, original signing
+certificate, and packaged launcher icon verified. The in-place LP3 installation
+retained the app UID and first-install timestamp. Cold launch, saved Google
+connection, Signed in action, installed status, and available-update rows passed.
+
+APK SHA-256: `f48a8d9ce305a10b1977bc11149b9167907b1e470a8502d1ccd3e29ff8bb9c87`.
 
 Alpha.4 passed 140 companion and 76 Android app tests, completed a real MIKU
 installation through Borealis on an LP3, and showed Up to date afterward. Existing

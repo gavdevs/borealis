@@ -8,7 +8,7 @@ Choose apps on the website. Install and update them on your phone.
 
 **[Sign in or create an account → borealis.loosewire.dev](https://borealis.loosewire.dev)**
 
-[Download Borealis](https://github.com/gavdevs/borealis/releases) · [Get help](https://github.com/gavdevs/borealis/issues)
+[Download Borealis](https://github.com/gavdevs/borealis/releases/latest) · [Get help](https://github.com/gavdevs/borealis/issues)
 
 ## 1. Create your account
 
