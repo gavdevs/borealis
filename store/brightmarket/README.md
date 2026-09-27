@@ -2,8 +2,10 @@
 
 Release target: **Borealis v0.1.7**, Android version code **12**, package
 **com.loosewire.borealis**. This adopts the same namespace as Lightious and Kelp.
-The renamed candidate still needs build, APK, phone, and publication checks before
-submission. BrightMarket has not received or accepted a listing through this work.
+The signed candidate passed CI and APK verification and is installed beside the
+old app on the LP3. The first-run screen check is waiting for the phone to be
+unlocked; publication and submission are still pending. BrightMarket has not
+received or accepted a listing through this work.
 
 ## Listing
 
@@ -86,8 +88,22 @@ and [icon discovery](https://github.com/gi-os/brightmarket-index/blob/main/scrip
 
 ## Verification boundary
 
-The following is historical evidence for the old package, not a claim that the
-renamed v0.1.7 candidate has been built or tested yet.
+The renamed v0.1.7/code 12 candidate at
+`d4dab062bf70d5461a80d62279a7496e8825c645` passed
+[CI](https://github.com/gavdevs/borealis/actions/runs/36359392505) and the
+[signed release build](https://github.com/gavdevs/borealis/actions/runs/36359395326).
+The reports confirm 80 app and 15 SDK authentication tests with no failures;
+23 release-policy tests also pass. All 15 artifact checksums, actual APK package
+and version, non-debuggable optimized build flags, original certificate, exact
+app/SDK source archives, SDK overlay, and unchanged GPlay source verified.
+The new package installed successfully with a separate UID while the old app
+retained its UID, version, and original first-install timestamp. Cold-launch
+visual verification is awaiting unlock; fresh pairing and Google sign-in have
+not been tested on the new installation.
+
+v0.1.7 APK SHA-256: `ea73a394359b5694ced20c156dbd11dfb3ee558d631cee84aa0cc5bbeba208d3`.
+
+The following additional behavior evidence belongs to the old package:
 
 The v0.1.6 release at `63288da08863a70ee5001fb7ab0033c674599166` passed
 [CI](https://github.com/gavdevs/borealis/actions/runs/36357724823) and the
