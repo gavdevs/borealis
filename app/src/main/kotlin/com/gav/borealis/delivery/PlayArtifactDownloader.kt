@@ -4,6 +4,7 @@ import com.aurora.gplayapi.data.models.PlayFile
 import com.thelightphone.sdk.install.LightPackageArtifact
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URI
 import java.security.MessageDigest
@@ -96,7 +97,11 @@ class PlayArtifactDownloader(private val filesDir: File) {
         require(uri.scheme == "https" && !uri.host.isNullOrBlank()) {
             "Google Play returned an unsafe delivery URL."
         }
-        val connection = uri.toURL().openConnection() as HttpURLConnection
+        val connection = try {
+            uri.toURL().openConnection() as HttpURLConnection
+        } catch (_: Exception) {
+            throw IOException("Could not open the Google Play download.")
+        }
         connection.connectTimeout = 15_000
         connection.readTimeout = 60_000
         connection.instanceFollowRedirects = true
@@ -140,6 +145,9 @@ class PlayArtifactDownloader(private val filesDir: File) {
                 StandardCopyOption.ATOMIC_MOVE,
                 StandardCopyOption.REPLACE_EXISTING,
             )
+        } catch (_: IOException) {
+            // Network exceptions can include the signed delivery URL; reports go to the companion.
+            throw IOException("The Google Play download failed. Check the connection and try again.")
         } finally {
             connection.disconnect()
             temp.delete()

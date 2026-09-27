@@ -12,6 +12,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewModelScope
 import com.gav.borealis.BorealisServices
+import com.gav.borealis.delivery.PersonalPlayAuthException
 import com.thelightphone.sdk.LightScreen
 import com.thelightphone.sdk.LightViewModel
 import com.thelightphone.sdk.SealedLightActivity
@@ -98,6 +99,10 @@ class BorealisGoogleViewModel(private val services: BorealisServices) : LightVie
                 }
             } catch (error: CancellationException) {
                 throw error
+            } catch (error: PersonalPlayAuthException) {
+                if (generation.get() == attempt) {
+                    fail(error.message ?: "Google Play could not complete the connection. Try again.")
+                }
             } catch (_: Exception) {
                 if (generation.get() == attempt) {
                     fail("Google Play could not complete the connection. You can retry sign-in; your password was not stored.")

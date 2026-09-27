@@ -134,7 +134,7 @@ class PersonalPlayAuthProviderTest {
         assertSame(original, store.value)
         assertEquals(0, store.writes)
         assertFalse(error.toString().contains("fake-secret"))
-        assertNull(error.cause)
+        assertSanitizedCoroutineFailure(error)
     }
 
     @Test
@@ -179,7 +179,7 @@ class PersonalPlayAuthProviderTest {
         val provider = provider(store) { throw GooglePlayException.AuthException(403, "Token=fake-secret") }
         val error = assertFailsWith<PersonalPlayAuthException> { provider.authenticate(Properties(), Locale.US) }
         assertEquals("Google rejected this Play sign-in. Try signing in again on the phone.", error.message)
-        assertNull(error.cause)
+        assertSanitizedCoroutineFailure(error)
     }
 
     @Test
@@ -297,6 +297,21 @@ class PersonalPlayAuthProviderTest {
         deviceConfigToken = "fake-device-config",
         isAnonymous = false,
     )
+
+    private fun assertSanitizedCoroutineFailure(error: PersonalPlayAuthException) {
+        // Coroutine stack recovery may copy the safe exception and use that original safe
+        // exception as its cause. Permit only those identical wrappers, never a raw failure.
+        val visited = mutableSetOf<Throwable>()
+        var current: Throwable? = error
+        while (current != null) {
+            assertTrue(visited.add(current), "Exception cause chain must not contain a cycle")
+            assertEquals(PersonalPlayAuthException::class, current::class)
+            assertEquals(error.message, current.message)
+            assertTrue(current.suppressed.isEmpty(), "No upstream error may survive as suppressed")
+            current = current.cause
+        }
+        assertFalse(error.stackTraceToString().contains("fake-secret"))
+    }
 
     private companion object {
         const val EMAIL = "person@example.test"
