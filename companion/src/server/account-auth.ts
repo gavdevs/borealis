@@ -6,7 +6,7 @@ import { runWithTransaction } from '@better-auth/core/context'
 import type { BorealisConfig } from './config.js'
 import type { BorealisVariables } from './context.js'
 import type { BorealisDatabase } from './db.js'
-import { secureStringEqual, sha256Hex } from './crypto.js'
+import { sha256Hex } from './crypto.js'
 import { PasswordBusyError, type PasswordRuntime } from './passwords.js'
 import { AUTH_BASE_PATH, createAccountAuth, internalAuthEmail } from './better-auth.js'
 import { PASSWORD_MAX_CODE_UNITS, passwordValidationError } from '../shared/password-policy.js'
@@ -19,7 +19,6 @@ const passwordSchema = z.string().max(PASSWORD_MAX_CODE_UNITS).superRefine((valu
 })
 const credentialsSchema = z.object({ username: usernameSchema, password: passwordSchema }).strict()
 const signinSchema = z.object({ username: usernameSchema, password: z.string().min(1).max(256) }).strict()
-const bootstrapSchema = credentialsSchema.extend({ adminToken: z.string().min(1).max(512) })
 const changeSchema = z.object({ currentPassword: z.string().min(1).max(256), newPassword: passwordSchema }).strict()
 
 type AuthContext = Context<{ Variables: BorealisVariables }>
@@ -127,10 +126,6 @@ export function registerAccountAuth(app: Hono<{ Variables: BorealisVariables }>,
     c.set('sessionDigest', sha256Hex(session.session.token))
     await next()
   })
-  const curatorAuth = createMiddleware<{ Variables: BorealisVariables }>(async (c, next) => {
-    if (c.get('account').role !== 'curator') return c.json({ error: 'Only a catalog curator can approve or change apps.' }, 403)
-    await next()
-  })
 
   app.use(`${API}/auth/*`, browserMutationGuard)
   app.use(`${API}/auth/*`, async (c, next) => {
@@ -144,45 +139,36 @@ export function registerAccountAuth(app: Hono<{ Variables: BorealisVariables }>,
     const session = await readSession(c)
     const account = session ? await database.getAccount(session.user.id) : null
     if (!account && c.req.header('Cookie')) clearSession(c)
-    return c.json({ account, bootstrapAvailable: await database.isBootstrapAvailable() })
+    return c.json({ account })
   })
 
-  for (const bootstrap of [false, true]) {
-    app.post(`${API}/auth/${bootstrap ? 'bootstrap' : 'signup'}`, async (c) => {
-      if (!await limit(c, bootstrap ? 'bootstrap' : 'signup', 5, bootstrap ? 900 : 3600)) {
-        return c.json({ error: 'Too many attempts. Try again later.' }, 429)
-      }
-      const parsed = (bootstrap ? bootstrapSchema : credentialsSchema).safeParse(await c.req.json().catch(() => null))
-      if (!parsed.success) return c.json({ error: parsed.error.issues[0]?.message ?? 'Check your username and password.' }, 400)
-      if (bootstrap) {
-        if (!('adminToken' in parsed.data) || !secureStringEqual(parsed.data.adminToken as string, config.adminToken)) {
-          return c.json({ error: 'The server setup token is not valid.' }, 401)
-        }
-        if (!await database.isBootstrapAvailable()) return c.json({ error: 'Server owner setup is already complete.' }, 409)
-      }
-      const response = await callAuth(c, '/sign-up/email', {
-        email: internalAuthEmail(parsed.data.username), name: parsed.data.username,
-        username: parsed.data.username, password: parsed.data.password,
-      })
-      if (!response.ok) {
-        if (response.status >= 500) return unavailable(c)
-        const error = await response.json() as { code?: string }
-        if (['USER_ALREADY_EXISTS', 'USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL', 'USERNAME_IS_ALREADY_TAKEN'].includes(error.code ?? '')) {
-          return c.json({ error: 'That username is unavailable, or server setup is already complete.' }, 409)
-        }
-        return c.json({ error: 'Unable to create your account. Please try again.' }, 400)
-      }
-      const result = await response.json() as { user: { id: string } }
-      let account = await database.ensureBetterAuthAccount({
-        id: result.user.id, username: parsed.data.username, createdAt: clock().toISOString(),
-      })
-      if (account && bootstrap) account = await database.claimBetterAuthOwner(account.id, clock().toISOString())
-      if (!account) return c.json({ error: 'That username is unavailable, or server setup is already complete.' }, 409)
-      await database.runAuth(() => auth.api.signOut({ headers: authHeaders(c) }))
-      copyCookies(c, response)
-      return c.json({ account }, 201)
+  app.post(`${API}/auth/signup`, async (c) => {
+    if (!await limit(c, 'signup', 5, 3600)) {
+      return c.json({ error: 'Too many attempts. Try again later.' }, 429)
+    }
+    const parsed = credentialsSchema.safeParse(await c.req.json().catch(() => null))
+    if (!parsed.success) return c.json({ error: parsed.error.issues[0]?.message ?? 'Check your username and password.' }, 400)
+    const response = await callAuth(c, '/sign-up/email', {
+      email: internalAuthEmail(parsed.data.username), name: parsed.data.username,
+      username: parsed.data.username, password: parsed.data.password,
     })
-  }
+    if (!response.ok) {
+      if (response.status >= 500) return unavailable(c)
+      const error = await response.json() as { code?: string }
+      if (['USER_ALREADY_EXISTS', 'USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL', 'USERNAME_IS_ALREADY_TAKEN'].includes(error.code ?? '')) {
+        return c.json({ error: 'That username is unavailable.' }, 409)
+      }
+      return c.json({ error: 'Unable to create your account. Please try again.' }, 400)
+    }
+    const result = await response.json() as { user: { id: string } }
+    const account = await database.ensureBetterAuthAccount({
+      id: result.user.id, username: parsed.data.username, createdAt: clock().toISOString(),
+    })
+    if (!account) return c.json({ error: 'That username is unavailable.' }, 409)
+    await database.runAuth(() => auth.api.signOut({ headers: authHeaders(c) }))
+    copyCookies(c, response)
+    return c.json({ account }, 201)
+  })
 
   app.post(`${API}/auth/signin`, async (c) => {
     if (!await limit(c, 'signin', 30, 900)) return c.json({ error: 'Too many sign-in attempts. Try again later.' }, 429)
@@ -234,5 +220,5 @@ export function registerAccountAuth(app: Hono<{ Variables: BorealisVariables }>,
     copyCookies(c, response)
     return c.json({ account: c.get('account') })
   })
-  return { accountAuth, curatorAuth, browserMutationGuard, limit }
+  return { accountAuth, browserMutationGuard, limit }
 }

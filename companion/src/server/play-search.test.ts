@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { GooglePlayWebSearchProvider, parseGooglePlaySearchHtml } from './play-search.js'
+import { GooglePlayWebSearchProvider, parseGooglePlayDetailsHtml, parseGooglePlaySearchHtml } from './play-search.js'
 
 const PLAY_FIXTURE = `
   <main>
@@ -36,6 +36,44 @@ function providerFor(response: Response) {
 }
 
 describe('Google Play web search provider', () => {
+  const detailsFixture = (changes: Record<string, unknown> = {}) => `<script type="application/ld+json" nonce="fixture">${JSON.stringify({
+    '@type': 'SoftwareApplication', name: 'North Bank', operatingSystem: 'ANDROID', applicationCategory: 'FINANCE',
+    url: 'https://play.google.com/store/apps/details/North_Bank?id=com.example.northbank&hl=en',
+    author: { name: 'North Financial' }, description: 'Banking with emailed receipts.', ...changes,
+  })}</script>`
+
+  it('reads only canonical Android application structured metadata for the requested package', () => {
+    expect(parseGooglePlayDetailsHtml(detailsFixture(), 'com.example.northbank')).toMatchObject({
+      packageName: 'com.example.northbank', displayName: 'North Bank', publisher: 'North Financial', category: 'FINANCE',
+    })
+    expect(parseGooglePlayDetailsHtml(detailsFixture(), 'com.example.other')).toBeNull()
+    expect(parseGooglePlayDetailsHtml(detailsFixture({ url: 'https://untrusted.test/?id=com.example.northbank' }), 'com.example.northbank')).toBeNull()
+    expect(parseGooglePlayDetailsHtml(detailsFixture({ applicationCategory: undefined }), 'com.example.northbank')).toBeNull()
+    expect(parseGooglePlayDetailsHtml('<script type="application/ld+json">invalid</script>', 'com.example.northbank')).toBeNull()
+  })
+
+  it('resolves details only at the fixed Google Play origin and does not follow redirects', async () => {
+    const fetcher: typeof fetch = async (input, init) => {
+      const url = new URL(input.toString())
+      expect(url.origin).toBe('https://play.google.com')
+      expect(url.pathname).toBe('/store/apps/details')
+      expect(url.searchParams.get('id')).toBe('com.example.northbank')
+      expect(init?.redirect).toBe('error')
+      expect(init?.headers).not.toHaveProperty('Authorization')
+      return new Response(detailsFixture())
+    }
+    expect(await new GooglePlayWebSearchProvider('en', 'us', fetcher).details('com.example.northbank')).toMatchObject({ category: 'FINANCE' })
+  })
+
+  it('rejects malformed packages without a request and treats missing listings as unavailable', async () => {
+    const fetcher = vi.fn(async () => new Response(null, { status: 404 }))
+    const provider = new GooglePlayWebSearchProvider('en', 'us', fetcher)
+    expect(await provider.details('https://untrusted.test')).toBeNull()
+    expect(fetcher).not.toHaveBeenCalled()
+    expect(await provider.details('com.example.missing')).toBeNull()
+    expect(fetcher).toHaveBeenCalledOnce()
+  })
+
   it('extracts unique public app metadata from a fixture', () => {
     expect(parseGooglePlaySearchHtml(PLAY_FIXTURE, 10)).toEqual([
       expect.objectContaining({

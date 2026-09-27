@@ -2,7 +2,10 @@ import type { PlaySearchResult } from '../shared/api.js'
 
 export interface PlaySearchProvider {
   search(query: string, limit: number): Promise<PlaySearchResult[]>
+  details(packageName: string): Promise<PlayAppDetails | null>
 }
+
+export type PlayAppDetails = PlaySearchResult & { category: string; description: string }
 
 type FetchLike = typeof fetch
 
@@ -99,6 +102,55 @@ export function parseGooglePlaySearchHtml(html: string, limit: number): PlaySear
   return results
 }
 
+export function parseGooglePlayDetailsHtml(html: string, packageName: string): PlayAppDetails | null {
+  for (const json of jsonLdBlocks(html)) {
+    let value: unknown
+    try { value = JSON.parse(json) } catch { continue }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue
+    const app = value as Record<string, unknown>
+    if (app['@type'] !== 'SoftwareApplication' || app.operatingSystem !== 'ANDROID'
+      || typeof app.url !== 'string' || typeof app.name !== 'string'
+      || typeof app.applicationCategory !== 'string') continue
+    let url: URL
+    try { url = new URL(app.url) } catch { continue }
+    if (url.origin !== 'https://play.google.com' || url.searchParams.get('id') !== packageName) continue
+    const author = app.author && typeof app.author === 'object' && !Array.isArray(app.author)
+      ? app.author as Record<string, unknown> : null
+    if (typeof author?.name !== 'string' || !author.name.trim() || !app.name.trim()) continue
+    return {
+      packageName,
+      displayName: app.name.trim().slice(0, 100),
+      publisher: author.name.trim().slice(0, 120),
+      detailUrl: `https://play.google.com/store/apps/details?id=${encodeURIComponent(packageName)}`,
+      category: app.applicationCategory.trim().toUpperCase(),
+      description: typeof app.description === 'string' ? app.description.slice(0, 5_000) : '',
+      ...(typeof app.image === 'string' && app.image.startsWith('https://') ? { iconUrl: app.image } : {}),
+    }
+  }
+  return null
+}
+
+function* jsonLdBlocks(html: string): Generator<string> {
+  // Play's app record is a small JSON-LD document inside a much larger page.
+  // Scan a literal marker with native string search instead of repeatedly
+  // walking unrelated, often megabyte-sized inline scripts with a regexp.
+  let cursor = 0
+  for (let count = 0; count < 32; count++) {
+    const marker = html.indexOf('application/ld+json', cursor)
+    if (marker < 0) return
+    cursor = marker + 'application/ld+json'.length
+    const opening = html.lastIndexOf('<', marker)
+    const openingEnd = html.indexOf('>', marker)
+    if (opening < 0 || openingEnd < marker || openingEnd - opening > 2_048) continue
+    const tag = html.slice(opening, openingEnd + 1)
+    if (!/^<script\b/i.test(tag) || !/\btype=["']application\/ld\+json["']/i.test(tag)) continue
+    const closing = html.indexOf('</', openingEnd + 1)
+    if (closing < 0 || closing - openingEnd > 64 * 1024 || !/^<\/script\s*>/i.test(html.slice(closing, closing + 20))) continue
+    cursor = closing + 2
+    yield html.slice(openingEnd + 1, closing)
+  }
+}
+
 export class GooglePlayWebSearchProvider implements PlaySearchProvider {
   constructor(
     private readonly language = 'en',
@@ -113,6 +165,20 @@ export class GooglePlayWebSearchProvider implements PlaySearchProvider {
     url.searchParams.set('hl', this.language)
     url.searchParams.set('gl', this.country)
 
+    return parseGooglePlaySearchHtml(await this.fetchHtml(url), limit)
+  }
+
+  async details(packageName: string): Promise<PlayAppDetails | null> {
+    if (!/^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+$/.test(packageName)) return null
+    const url = new URL('https://play.google.com/store/apps/details')
+    url.searchParams.set('id', packageName)
+    url.searchParams.set('hl', this.language)
+    url.searchParams.set('gl', this.country)
+    const html = await this.fetchHtml(url, true)
+    return parseGooglePlayDetailsHtml(html, packageName)
+  }
+
+  private async fetchHtml(url: URL, allowMissing = false): Promise<string> {
     let response: Response
     try {
       response = await this.fetcher(url, {
@@ -120,12 +186,16 @@ export class GooglePlayWebSearchProvider implements PlaySearchProvider {
           Accept: 'text/html,application/xhtml+xml',
           'User-Agent': 'Borealis/0.1 (+personal companion; public Play metadata only)',
         },
-        redirect: 'follow',
+        redirect: 'error',
         signal: AbortSignal.timeout(10_000),
       })
     } catch {
       throw new PlaySearchResponseError('Google Play search could not be reached.')
     }
-    return parseGooglePlaySearchHtml(await readSearchHtml(response), limit)
+    if (allowMissing && response.status === 404) {
+      await response.body?.cancel()
+      return ''
+    }
+    return readSearchHtml(response)
   }
 }

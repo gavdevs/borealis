@@ -5,11 +5,9 @@ import { bodyLimit } from 'hono/body-limit'
 import { secureHeaders } from 'hono/secure-headers'
 import { z, ZodError } from 'zod'
 import type {
-  AllowlistItem,
   InstallJobPayload,
   JobSummary,
   PairingSummary,
-  PlaySearchResult,
   SignedJobEnvelope,
 } from '../shared/api.js'
 import { registerAccountAuth } from './account-auth.js'
@@ -28,27 +26,20 @@ import {
 import { BorealisDatabase } from './db.js'
 import { PasswordBusyError, type PasswordRuntime } from './passwords.js'
 import type { PlaySearchProvider } from './play-search.js'
+import { appIdentityPolicyReason, appPolicyReason } from './app-policy.js'
 
 const API = '/api/borealis/v1'
 const DEVICE_BEARER_PATTERN = /^brl_device_[A-Za-z0-9_-]{43}$/
 const POLL_SECRET_PATTERN = /^brl_poll_[A-Za-z0-9_-]{43}$/
 const SHA256_PATTERN = /^[a-f0-9]{64}$/
 const PACKAGE_PATTERN = /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+$/
+const MAX_SEARCH_DETAIL_REQUESTS = 8
 
 const pairingBodySchema = z.object({
   deviceLabel: z.string().trim().min(1).max(64),
   deviceBearerDigest: z.string().regex(SHA256_PATTERN),
 }).strict()
 
-const allowlistBodySchema = z.object({
-  packageName: z.string().trim().regex(PACKAGE_PATTERN),
-  displayName: z.string().trim().min(1).max(100),
-  publisher: z.string().trim().min(1).max(120),
-  reason: z.string().trim().min(4).max(500),
-  signerSha256: z.string().trim().max(128).nullable().optional(),
-}).strict()
-
-const allowlistUpdateBodySchema = allowlistBodySchema.omit({ packageName: true })
 const assignmentBodySchema = z.object({ packageName: z.string().regex(PACKAGE_PATTERN) }).strict()
 const approvalBodySchema = z.object({ userCode: z.string().min(8).max(20) }).strict()
 const reportBodySchema = z.object({
@@ -84,7 +75,6 @@ export async function createBorealisApp(options: AppOptions): Promise<Hono<{ Var
 
   const {
     accountAuth,
-    curatorAuth,
     browserMutationGuard,
     limit,
   } = registerAccountAuth(app, options)
@@ -103,9 +93,6 @@ export async function createBorealisApp(options: AppOptions): Promise<Hono<{ Var
   app.use(`${API}/catalog/search`, accountAuth)
   app.use(`${API}/me/*`, browserMutationGuard)
   app.use(`${API}/me/*`, accountAuth)
-  app.use(`${API}/admin/*`, browserMutationGuard)
-  app.use(`${API}/admin/*`, accountAuth)
-  app.use(`${API}/admin/*`, curatorAuth)
   app.use(`${API}/device/*`, deviceAuth)
 
   app.get(`${API}/health`, (c) => c.json({
@@ -123,13 +110,33 @@ export async function createBorealisApp(options: AppOptions): Promise<Hono<{ Var
     if (!parsed.success) return validationError(c, parsed.error)
 
     try {
-      const account = c.get('account')
-      const results = account.role === 'curator'
-        ? await playSearch.search(parsed.data.q, parsed.data.limit)
-        : (await database.listAllowlist())
-          .filter((item) => allowlistMatches(item, parsed.data.q))
-          .slice(0, parsed.data.limit)
-          .map(mapPlaySearchResult)
+      if (!await limit(c, 'catalog-search', 30, 60)) return rateLimited(c, 60)
+      // The requested limit is an upper bound. Keep each query's detail lookup
+      // batch small enough for the Free Worker; titles only pre-filter obvious
+      // exclusions and never authorize an app without canonical metadata.
+      const candidates = (await playSearch.search(parsed.data.q, parsed.data.limit))
+        .filter((item) => appIdentityPolicyReason(item) === null)
+        .slice(0, Math.min(parsed.data.limit, MAX_SEARCH_DETAIL_REQUESTS))
+      const results = []
+      let failedDetails = 0
+      // Bound concurrent HTML buffers/subrequests on Workers Free. Only canonical
+      // detail metadata can satisfy policy; search snippets are not permission.
+      for (let offset = 0; offset < candidates.length; offset += 3) {
+        const details = await Promise.all(candidates.slice(offset, offset + 3)
+          .map((candidate) => playSearch.details(candidate.packageName).catch(() => {
+            failedDetails++
+            return null
+          })))
+        for (const item of details) {
+          if (item && appPolicyReason(item) === null) {
+            const { category: _category, description: _description, ...result } = item
+            results.push(result)
+          }
+        }
+      }
+      if (candidates.length > 0 && failedDetails === candidates.length) {
+        return c.json({ error: 'Google Play app details could not be reached. Please try again.' }, 502)
+      }
       return c.json({ query: parsed.data.q, results })
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Google Play search failed.'
@@ -196,52 +203,6 @@ export async function createBorealisApp(options: AppOptions): Promise<Hono<{ Var
     })
   })
 
-  app.get(`${API}/admin/allowlist`, async (c) => c.json({ items: await database.listAllowlist() }))
-
-  app.post(`${API}/admin/allowlist`, async (c) => {
-    const parsed = await parseJson(c, allowlistBodySchema)
-    if (!parsed.ok) return parsed.response
-    const signerSha256 = normalizeSigner(parsed.data.signerSha256)
-    if (signerSha256 === undefined) return c.json({ error: 'Signer SHA-256 must contain exactly 64 hexadecimal characters.' }, 400)
-
-    const item = await database.createAllowlist({
-      packageName: parsed.data.packageName,
-      displayName: parsed.data.displayName,
-      publisher: parsed.data.publisher,
-      reason: parsed.data.reason,
-      signerSha256,
-    }, clock().toISOString())
-    if (!item) return c.json({ error: 'That package is already on the allowlist.' }, 409)
-    return c.json({ item }, 201)
-  })
-
-  app.get(`${API}/admin/allowlist/:packageName`, async (c) => {
-    const item = await database.getAllowlist(c.req.param('packageName'))
-    return item ? c.json({ item }) : c.json({ error: 'Allowlisted package not found.' }, 404)
-  })
-
-  app.put(`${API}/admin/allowlist/:packageName`, async (c) => {
-    const packageName = c.req.param('packageName')
-    if (!PACKAGE_PATTERN.test(packageName)) return c.json({ error: 'Invalid package name.' }, 400)
-    const parsed = await parseJson(c, allowlistUpdateBodySchema)
-    if (!parsed.ok) return parsed.response
-    const signerSha256 = normalizeSigner(parsed.data.signerSha256)
-    if (signerSha256 === undefined) return c.json({ error: 'Signer SHA-256 must contain exactly 64 hexadecimal characters.' }, 400)
-
-    const item = await database.updateAllowlist(packageName, {
-      displayName: parsed.data.displayName,
-      publisher: parsed.data.publisher,
-      reason: parsed.data.reason,
-      signerSha256,
-    }, clock().toISOString())
-    return item ? c.json({ item }) : c.json({ error: 'Allowlisted package not found.' }, 404)
-  })
-
-  app.delete(`${API}/admin/allowlist/:packageName`, async (c) => {
-    const deleted = await database.deleteAllowlist(c.req.param('packageName'), clock().toISOString())
-    return deleted ? c.json({ ok: true }) : c.json({ error: 'Allowlisted package not found.' }, 404)
-  })
-
   app.get(`${API}/me/apps`, async (c) => {
     return c.json({ items: await database.listAccountApps(c.get('account').id) })
   })
@@ -249,8 +210,17 @@ export async function createBorealisApp(options: AppOptions): Promise<Hono<{ Var
   app.post(`${API}/me/apps`, async (c) => {
     const parsed = await parseJson(c, assignmentBodySchema)
     if (!parsed.ok) return parsed.response
-    const item = await database.addAccountApp(c.get('account').id, parsed.data.packageName, clock().toISOString())
-    return item ? c.json({ item }, 201) : c.json({ error: 'Allowlisted package not found.' }, 404)
+    if (!await limit(c, 'library-add', 60, 600)) return rateLimited(c, 600)
+    try {
+      const details = await playSearch.details(parsed.data.packageName)
+      if (!details) return c.json({ error: 'This app could not be found on Google Play.' }, 404)
+      const policyReason = appPolicyReason(details)
+      if (policyReason) return c.json({ error: policyReason }, 403)
+      const item = await database.addResolvedAccountApp(c.get('account').id, details, clock().toISOString())
+      return item ? c.json({ item }, 201) : c.json({ error: 'Account not found.' }, 404)
+    } catch {
+      return c.json({ error: 'Google Play app details could not be verified. Please try again.' }, 502)
+    }
   })
 
   app.delete(`${API}/me/apps/:packageName`, async (c) => {
@@ -314,41 +284,6 @@ export async function createBorealisApp(options: AppOptions): Promise<Hono<{ Var
     return revoked ? c.json({ ok: true }) : c.json({ error: 'Active device not found.' }, 404)
   })
 
-  app.get(`${API}/me/devices/:deviceId/assignments`, async (c) => {
-    const device = await database.getDevice(c.req.param('deviceId'), c.get('account').id)
-    if (!device) return c.json({ error: 'Device not found.' }, 404)
-    const allowed = new Map((await database.listAllowlist()).map((item) => [item.packageName, item]))
-    return c.json({
-      assignments: device.assignments.flatMap((packageName) => {
-        const item = allowed.get(packageName)
-        return item ? [item] : []
-      }),
-    })
-  })
-
-  app.post(`${API}/me/devices/:deviceId/assignments`, async (c) => {
-    const parsed = await parseJson(c, assignmentBodySchema)
-    if (!parsed.ok) return parsed.response
-    const result = await database.assignPackage(
-      c.req.param('deviceId'),
-      parsed.data.packageName,
-      clock().toISOString(),
-      c.get('account').id,
-    )
-    if (!result) return c.json({ error: 'Device or allowlisted package not found.' }, 404)
-    return c.json(result, result.created ? 201 : 200)
-  })
-
-  app.delete(`${API}/me/devices/:deviceId/assignments/:packageName`, async (c) => {
-    const removed = await database.removeAssignment(
-      c.req.param('deviceId'),
-      c.req.param('packageName'),
-      clock().toISOString(),
-      c.get('account').id,
-    )
-    return removed ? c.json({ ok: true }) : c.json({ error: 'Assignment not found.' }, 404)
-  })
-
   app.get(`${API}/me/devices/:deviceId/jobs`, async (c) => {
     const owner = c.get('account').id
     const device = await database.getDevice(c.req.param('deviceId'), owner)
@@ -363,47 +298,54 @@ export async function createBorealisApp(options: AppOptions): Promise<Hono<{ Var
     const owner = c.get('account').id
     const device = await database.getDevice(c.req.param('deviceId'), owner)
     if (!device) return c.json({ error: 'Device not found.' }, 404)
-    const job = await database.queueJob(
+    const job = await database.queueLibraryJob(
       device.id,
       parsed.data.packageName,
-      randomUUID(),
       clock().toISOString(),
       owner,
     )
-    return job ? c.json({ job }, 201) : c.json({ error: 'Assign this allowlisted package to the device before queuing it.' }, 409)
+    return job ? c.json({ job }, 201) : c.json({ error: 'Add this app to your library before installing it.' }, 409)
+  })
+
+  function signedJob(job: JobSummary, now: Date): SignedJobEnvelope {
+    const payload: InstallJobPayload = {
+      schemaVersion: 1,
+      jobId: job.id,
+      deviceId: job.deviceId,
+      action: 'install_or_update',
+      packageName: job.packageName,
+      displayName: job.displayName,
+      // Publisher trust is enforced on the phone by APK signature continuity,
+      // not by a shared human-approved catalog pin.
+      acceptedSignerSha256: [],
+      issuedAt: now.toISOString(),
+      expiresAt: new Date(now.getTime() + config.jobTtlSeconds * 1_000).toISOString(),
+      nonce: randomNonce(),
+    }
+    const exactPayload = JSON.stringify(payload)
+    return { keyId: signingKey.keyId, payload: exactPayload, signature: signPayload(exactPayload, privateSigningKey) }
+  }
+
+  app.post(`${API}/device/library/:packageName/job`, async (c) => {
+    const packageName = c.req.param('packageName')
+    if (!PACKAGE_PATTERN.test(packageName)) return c.json({ error: 'Invalid package name.' }, 400)
+    const now = clock()
+    const job = await database.queueLibraryJob(c.get('device').id, packageName, now.toISOString())
+    return job ? c.json({ job: signedJob(job, now) }) : c.json({ error: 'This app is not in your library.' }, 404)
   })
 
   app.get(`${API}/device/sync`, async (c) => {
     const device = c.get('device')
     const now = clock()
-    const jobs = (await database.listSyncJobs(device.id, now.toISOString())).map((job): SignedJobEnvelope => {
-      const issuedAt = now.toISOString()
-      const expiresAt = new Date(now.getTime() + config.jobTtlSeconds * 1_000).toISOString()
-      const payload: InstallJobPayload = {
-        schemaVersion: 1,
-        jobId: job.id,
-        deviceId: device.id,
-        action: 'install_or_update',
-        packageName: job.packageName,
-        displayName: job.displayName,
-        acceptedSignerSha256: job.acceptedSignerSha256,
-        issuedAt,
-        expiresAt,
-        nonce: randomNonce(),
-      }
-      const exactPayload = JSON.stringify(payload)
-      return {
-        keyId: signingKey.keyId,
-        payload: exactPayload,
-        signature: signPayload(exactPayload, privateSigningKey),
-      }
-    })
+    const jobs = (await database.listSyncJobs(device.id, now.toISOString())).map((job) => signedJob(job, now))
+    const library = await database.listDeviceLibrary(device.id)
     const refreshed = (await database.getDevice(device.id)) ?? device
     return c.json({
       deviceId: refreshed.id,
       deviceLabel: refreshed.label,
       revision: refreshed.revision,
       serverTime: now.toISOString(),
+      library,
       jobs,
     })
   })
@@ -417,15 +359,8 @@ export async function createBorealisApp(options: AppOptions): Promise<Hono<{ Var
 
     const observedSignerSha256 = normalizeSignerList(parsed.data.observedSignerSha256 ?? [])
     if (!observedSignerSha256) return c.json({ error: 'Observed signer values must be SHA-256 hex digests.' }, 400)
-    const acceptedSigners = await database.getJobAcceptedSigners(job.id)
     if (parsed.data.status === 'review_required' && observedSignerSha256.length === 0) {
       return c.json({ error: 'Signer review requires at least one observed signer.' }, 400)
-    }
-    if (parsed.data.status === 'review_required' && acceptedSigners.length > 0) {
-      return c.json({ error: 'This job already has an approved signer pin; report a verification failure instead.' }, 409)
-    }
-    if (['awaiting_user_action', 'succeeded'].includes(parsed.data.status) && acceptedSigners.length === 0) {
-      return c.json({ error: 'A signer must be reviewed and pinned before installation.' }, 409)
     }
 
     const revision = await database.reportJob({
@@ -461,21 +396,6 @@ function bearerToken(header: string | undefined): string | null {
   if (!header) return null
   const match = /^Bearer\s+(.+)$/i.exec(header)
   return match?.[1]?.trim() ?? null
-}
-
-function allowlistMatches(item: AllowlistItem, query: string): boolean {
-  const needle = query.toLocaleLowerCase()
-  return [item.packageName, item.displayName, item.publisher]
-    .some((value) => value.toLocaleLowerCase().includes(needle))
-}
-
-function mapPlaySearchResult(item: AllowlistItem): PlaySearchResult {
-  return {
-    packageName: item.packageName,
-    displayName: item.displayName,
-    publisher: item.publisher,
-    detailUrl: `https://play.google.com/store/apps/details?id=${encodeURIComponent(item.packageName)}`,
-  }
 }
 
 function pairingSummary(pairing: PairingSummary): PairingSummary {

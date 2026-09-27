@@ -12,7 +12,12 @@ The raw device bearer is generated and retained only by the phone.
 
 ## Sync
 
-`GET /device/sync` returns a monotonic revision and signed jobs. A signed job envelope is:
+`GET /device/sync` returns a monotonic revision, the paired account's `library`
+(package and display names), and outstanding signed jobs. The library is display
+metadata, not installation authority. `POST /device/library/:packageName/job`
+checks current ownership/library membership and returns `{ "job": <signed envelope> }`
+for Install or Update. It reuses an active job rather than endlessly creating
+duplicates on every sync. A signed job envelope is:
 
 ```json
 {
@@ -38,4 +43,12 @@ depend on the phone providing an Ed25519 `KeyFactory` (the LP3 does not).
 
 The v1 payload names the schema version, job and device IDs, `install_or_update` action, package and display names, accepted signer SHA-256 values, issue and expiry times, and nonce.
 
-`POST /device/jobs/:jobId/report` records `downloading`, `review_required`, `awaiting_user_action`, `installed`, or `failed`, plus observed version/signer details where relevant.
+New personal-library jobs have an empty `acceptedSignerSha256` list: this no
+longer means manual publisher approval is needed. The phone verifies Play artifact
+integrity, APK identity, and signing continuity with any installed package.
+
+`POST /device/jobs/:jobId/report` records `installing`, `awaiting_user_action`,
+`succeeded`, `failed`, or `cancelled`, with version/signer details where relevant.
+The legacy `review_required` status may remain in history, but new phones do not
+emit it and the server no longer rejects successful unpinned jobs. Byte-level
+download progress is local phone UI state, not high-frequency database traffic.

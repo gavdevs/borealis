@@ -63,7 +63,38 @@ data class DeviceSyncResponse(
     val revision: Long,
     val serverTime: String,
     val jobs: List<SignedJobEnvelope> = emptyList(),
+    val library: List<LibraryApp> = emptyList(),
 )
+
+@Serializable
+data class LibraryApp(
+    val packageName: String,
+    val displayName: String,
+)
+
+@Serializable
+data class LibraryJobResponse(val job: SignedJobEnvelope)
+
+enum class LibraryAppStatus {
+    NotInstalled,
+    UpToDate,
+    UpdateAvailable,
+    UpdateStatusUnknown,
+}
+
+data class LibraryAppState(
+    val app: LibraryApp,
+    val installedVersionCode: Long? = null,
+    val availableVersionCode: Long? = null,
+) {
+    val status: LibraryAppStatus
+        get() = when {
+            installedVersionCode == null -> LibraryAppStatus.NotInstalled
+            availableVersionCode == null -> LibraryAppStatus.UpdateStatusUnknown
+            availableVersionCode > installedVersionCode -> LibraryAppStatus.UpdateAvailable
+            else -> LibraryAppStatus.UpToDate
+        }
+}
 
 @Serializable
 data class SignedInstallJob(
@@ -95,7 +126,6 @@ data class JobReportResponse(
 
 enum class BorealisJobStatus(val wireValue: String) {
     Installing("installing"),
-    ReviewRequired("review_required"),
     AwaitingUserAction("awaiting_user_action"),
     Succeeded("succeeded"),
     Failed("failed"),

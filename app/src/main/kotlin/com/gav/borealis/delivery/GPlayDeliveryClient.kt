@@ -32,6 +32,9 @@ class GPlayDeliveryClient(
     private val authProvider: PlayAuthProvider,
     private val httpClient: IHttpClient,
     private val locale: Locale = Locale.getDefault(),
+    private val detailsLookup: (AuthData, String, IHttpClient) -> App = { auth, packageName, client ->
+        AppDetailsHelper(auth).using(client).getAppByPackageName(packageName)
+    },
 ) {
     private val profile = Properties().apply {
         ByteArrayInputStream(profileBytes).use(::load)
@@ -40,16 +43,17 @@ class GPlayDeliveryClient(
     @Volatile
     private var authData: AuthData? = null
 
+    /** Details only: this must not purchase an app or obtain/download APK artifacts. */
+    suspend fun latestVersionCode(packageName: String): Long = withContext(Dispatchers.IO) {
+        appDetails(packageName, authenticate()).versionCode
+    }
+
     suspend fun resolve(
         packageName: String,
         installedSignerSha256: String? = null,
     ): PlayDelivery = withContext(Dispatchers.IO) {
-        require(PACKAGE_NAME.matches(packageName)) { "Invalid Play package name." }
         val auth = authenticate()
-        val app = AppDetailsHelper(auth).using(httpClient).getAppByPackageName(packageName)
-        require(app.packageName == packageName && app.versionCode > 0L) {
-            "Google Play returned invalid package details."
-        }
+        val app = appDetails(packageName, auth)
 
         val helper = PurchaseHelper(auth).using(httpClient)
         val libraries = app.dependencies.dependentLibraries.map { library ->
@@ -94,6 +98,15 @@ class GPlayDeliveryClient(
     private suspend fun authenticate(): AuthData = authMutex.withLock {
         authData ?: withContext(Dispatchers.IO) {
             authProvider.authenticate(profile, locale).also { authData = it }
+        }
+    }
+
+    private fun appDetails(packageName: String, auth: AuthData): App {
+        require(PACKAGE_NAME.matches(packageName)) { "Invalid Play package name." }
+        return detailsLookup(auth, packageName, httpClient).also { app ->
+            require(app.packageName == packageName && app.versionCode > 0L) {
+                "Google Play returned invalid package details."
+            }
         }
     }
 

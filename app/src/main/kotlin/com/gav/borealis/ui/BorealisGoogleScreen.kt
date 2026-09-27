@@ -181,7 +181,7 @@ class BorealisGoogleScreen(sealedActivity: SealedLightActivity) :
                                 state.message ?: when {
                                     state.loading -> "Checking connection…"
                                     state.connected -> "Your Google Play connection is saved on this phone."
-                                    else -> "Sign in with Google so Borealis can download and update your approved apps from Google Play."
+                                    else -> "Sign in with Google so Borealis can download and update your library apps from Google Play."
                                 },
                                 LightTextVariant.Copy,
                                 modifier = Modifier.padding(top = 0.75f.gridUnitsAsDp()),

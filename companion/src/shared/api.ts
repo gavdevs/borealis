@@ -64,6 +64,11 @@ export type SignedJobEnvelope = {
   signature: string
 }
 
+export type DeviceLibraryItem = {
+  packageName: string
+  displayName: string
+}
+
 export type InstallJobPayload = {
   schemaVersion: 1
   jobId: string

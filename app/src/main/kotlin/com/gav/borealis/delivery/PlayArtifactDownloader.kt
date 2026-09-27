@@ -11,6 +11,8 @@ import java.security.MessageDigest
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 
 data class DownloadedPlayArtifacts(
@@ -24,6 +26,23 @@ data class ArtifactDownloadProgress(
     val downloadedBytes: Long,
     val totalBytes: Long,
 )
+
+/** Keep real byte progress responsive without redrawing the phone for every buffer. */
+internal class ArtifactProgressEmitter(
+    private val onProgress: (ArtifactDownloadProgress) -> Unit,
+    private val clockNanos: () -> Long = System::nanoTime,
+) {
+    private var lastEmission: Long? = null
+
+    fun report(progress: ArtifactDownloadProgress, force: Boolean = false) {
+        val now = clockNanos()
+        val previous = lastEmission
+        if (force || previous == null || now - previous >= 250_000_000L) {
+            lastEmission = now
+            onProgress(progress)
+        }
+    }
+}
 
 class ExpiredDeliveryUrlException : Exception("The Google Play delivery URL expired.")
 
@@ -61,20 +80,27 @@ class PlayArtifactDownloader(private val filesDir: File) {
         require(directory.mkdirs()) { "Could not create the private download directory." }
 
         var downloadedBytes = 0L
+        val progress = ArtifactProgressEmitter(onProgress)
         try {
             val ordered = baseFiles + splitFiles
             val artifacts = ordered.mapIndexed { index, playFile ->
+                currentCoroutineContext().ensureActive()
+                progress.report(
+                    ArtifactDownloadProgress(index + 1, ordered.size, downloadedBytes, totalBytes),
+                    force = true,
+                )
                 val targetName = if (index == 0) "base.apk" else "split-${index.toString().padStart(3, '0')}.apk"
                 val relativePath = "$relativeDirectory/$targetName"
                 val target = resolvePrivate(relativePath)
                 downloadOne(playFile, target) { fileBytes ->
-                    onProgress(
+                    progress.report(
                         ArtifactDownloadProgress(
                             currentFile = index + 1,
                             totalFiles = ordered.size,
                             downloadedBytes = downloadedBytes + fileBytes,
                             totalBytes = totalBytes,
                         ),
+                        force = fileBytes == playFile.size,
                     )
                 }
                 downloadedBytes += playFile.size
@@ -91,7 +117,9 @@ class PlayArtifactDownloader(private val filesDir: File) {
         if (SAFE_ID.matches(jobId)) resolvePrivate("borealis/jobs/$jobId").deleteRecursively()
     }
 
-    private fun downloadOne(playFile: PlayFile, target: File, onBytes: (Long) -> Unit) {
+    private suspend fun downloadOne(playFile: PlayFile, target: File, onBytes: (Long) -> Unit) {
+        val coroutineContext = currentCoroutineContext()
+        coroutineContext.ensureActive()
         val uri = runCatching { URI(playFile.url) }
             .getOrElse { throw IllegalArgumentException("Google Play returned an invalid delivery URL.") }
         require(uri.scheme == "https" && !uri.host.isNullOrBlank()) {
@@ -125,6 +153,7 @@ class PlayArtifactDownloader(private val filesDir: File) {
                 FileOutputStream(temp).use { output ->
                     val buffer = ByteArray(64 * 1024)
                     while (true) {
+                        coroutineContext.ensureActive()
                         val count = input.read(buffer)
                         if (count < 0) break
                         require(written + count <= playFile.size) { "Artifact download exceeded its expected size." }

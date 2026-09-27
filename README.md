@@ -1,13 +1,13 @@
 # Borealis
 
-Borealis is an intentionally unsupported, sideload-only installer and updater for Light Phone III. Discovery, review, and device assignments live in a web companion. The phone app has no catalog: it pairs, receives signed jobs for positively approved packages, downloads the correct Play delivery artifacts directly on the phone, verifies them, and hands the complete base-and-split set to Android's package installer.
+Borealis is an intentionally unsupported, sideload-only installer and updater for Light Phone III. Sign in on the web, search for an eligible app, and add it to your personal library. Your library appears on your paired phones, where you can install apps and see whether installed apps need updating. The phone has no store to browse: it downloads the correct Play artifacts, verifies them, and hands the complete base-and-split set to Android's installer.
 
 This is not a Light Tool Library project and is not affiliated with Light, Aurora OSS, or Google. It constrains only the Borealis installation path; it is not a phone-wide application blocker.
 
 ## Repository layout
 
 - `app/` — the Light SDK phone agent (`com.gav.borealis`)
-- `companion/` — the hosted web companion, allowlist, pairing, and job service
+- `companion/` — the hosted web companion, personal libraries, app policy, pairing, and job service
 - `docs/` — trust model, protocol, and local-development notes
 - `patches/` — pinned Light SDK installer changes and SDK license notice
 
@@ -17,18 +17,21 @@ The app consumes a custom SDK fork (by default `../light-sdk`). That fork adds t
 
 Borealis is Gav's centrally hosted service at [borealis.loosewire.dev](https://borealis.loosewire.dev).
 Create an account, sign in, and pair your phone. Users do not configure a server
-or need an admin token; curator provisioning is private operator work.
+or need an admin token. There is no curator account or publisher-approval step.
 
 On the paired phone, open `SIGN IN`. Sign in with Google so Borealis can download
-and update your approved apps from Google Play. Enter your details on Google's
+and update your library apps from Google Play. Enter your details on Google's
 page inside Borealis; no separately installed browser is required. Your connection
 is saved securely on the phone. The companion does not collect Google credentials,
 and Borealis does not store your Google password.
 Use `DISCONNECT` to remove Borealis's saved Play credentials from the phone.
 
 Your Borealis username/password account is separate from this Google sign-in.
-Keep using the companion to pair phones, choose approved apps, and send install
-jobs; catalog approval remains curator-only.
+Use the companion to pair phones and manage your library. Adding an app makes it
+available on every paired phone; there is no separate send or assignment step.
+The phone shows Install, Up to date, Update, or an explicit unavailable-check state.
+Downloads show real byte progress; verification, installation, and Android
+confirmation are separate stages, not a fabricated completion percentage.
 
 ## Development and operations
 
@@ -60,21 +63,20 @@ jobs; catalog approval remains curator-only.
 
 The first vertical slice is under active construction:
 
-1. Pair a phone with the companion.
-2. Search for a package and positively approve it in the companion.
-3. Assign it to the paired device.
-4. Verify the signed, device-bound job on the phone.
+1. Create an account and pair a phone with the companion.
+2. Search eligible Play apps and add them to your private library.
+3. Sync that library to the phone and choose Install or Update.
+4. Request and verify a signed, device-bound job on the phone.
 5. Fetch the current device-specific base and splits directly from Google Play.
 6. Verify package identity, signer, size, and hashes, then request installation.
 7. Report the final result to the companion and periodically check for updates.
 
 The prototype has passed initial phone unit tests and compilation, companion
 unit tests and typechecks, and fixture-based browser flows. Physical LP3
-end-to-end installation/update remains unverified. Recurring generation of
-update jobs and the intended category-admission policy are not complete; the
-current allowlist is manually curated. The companion supports username/password
-accounts, private app collections, and account-owned phones. Catalog approval
-and publisher pins are restricted to curators; public signup never grants that role.
+end-to-end installation/update remains unverified. App admission uses server-side
+Play-category filtering and targeted email/browser exclusions, not human approval.
+This automatic policy is a best-effort filter, not a guarantee that every app in
+an eligible category fits the philosophy. Accounts, libraries, and phones stay isolated.
 
 The Better Auth migration was applied to production on 2026-09-26 after a private
 backup. Existing account IDs, roles, password hashes, phone ownership, and exact
@@ -85,11 +87,11 @@ were cleaned. Legacy-password production signin, native GitHub build connection,
 and physical LP3 end-to-end approved-app installation remain unverified. See the
 [deployment runbook](docs/deployment.md) for session-secret handling and remaining checks.
 
-The v0.1.3 phone-local Google sign-in build is installed on the LP3, and the user
-confirmed that Google's page opens in its embedded WebView. Completing Google
-authentication, acquiring a usable Play credential, and installing/updating an
-approved app still need physical testing. This experimental flow is not supported
-Google OAuth, and Google may reject the embedded browser.
+On alpha.3 the LP3 completed Google authentication, securely saved the reusable
+credential, reused it successfully, and downloaded MIKU to the old publisher-review
+gate. The personal-library changes remove that gate. Completed third-party
+installation/update still needs physical testing. This experimental flow is not
+supported Google OAuth, and future Google behavior can change.
 
 Borealis is one shared hosted service where each person logs in and
 pairs their own phones. Turso is the chosen hosted SQLite provider (replacing

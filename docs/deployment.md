@@ -151,7 +151,7 @@ password changes, and new domain rows contain only `better-auth-managed` instead
 of a password hash. Do not treat switching back to the old auth code as a safe
 password/session rollback; coordinate recovery before doing so.
 
-## Verification and private curator provisioning
+## Verification
 
 After deployment or a relevant authentication change, run these from `companion/`:
 
@@ -169,7 +169,7 @@ password changes, and session revocation through the real HTTPS endpoint.
 Its `finally` cleanup resolves only its random fixture usernames and bearer
 digest, then explicitly removes their Better Auth users, sessions, credentials,
 and domain child rows without relying on foreign-key cascades. It never claims
-curator provisioning or edits the shared catalog. A cleanup failure is reported separately.
+legacy ownership or changes real users' libraries. A cleanup failure is reported separately.
 This verifies newly created accounts, not legacy-password compatibility or Android
 installation; verify those paths separately.
 
@@ -189,17 +189,15 @@ production signup cooldown; its temporary records were cleaned, and no rate limi
 was disabled. Run it again after the cooldown before treating the new 12-character
 policy as fully verified through production signup.
 
-The public companion offers signup and signin, not server setup. Curator
-provisioning is private operator work through the existing protected one-time
-`POST /api/borealis/v1/auth/bootstrap` endpoint, using `BOREALIS_ADMIN_TOKEN` and
-a new username/password. Its token checks, request guards, rate limits, and
-atomic owner claim remain in place. Never share the token with members or remove
-the `bootstrap_claimed` guard. Public signup creates members, never curators,
-even for the first account.
+The public companion offers signup, signin, pairing, and personal libraries,
+not server setup or a curator role. The old admin/bootstrap endpoints are
+unavailable. Do not promote accounts or delete legacy ownership records.
+`BOREALIS_ADMIN_TOKEN` retains its existing secret-derivation purpose despite
+the historical name; removing it or rotating it unnecessarily breaks sessions.
 
 Without email, forgotten-password recovery is not currently self-service.
-Existing catalog entries still need reviewed publisher pins before automatic
-approval of their signers.
+First installs use verified Play artifacts and Android signature checks; there
+is no publisher-approval provisioning step. Updates retain installed-signature checks.
 
 ## Operational boundaries
 

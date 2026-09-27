@@ -1,13 +1,14 @@
 import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import type { AccountSummary, AllowlistItem, DeviceSummary, JobSummary, PairingSummary, PlaySearchResult } from '../shared/api.js'
 import { ApiError, apiRequest } from './api.js'
+import { createRequestGuard } from './request-guard.js'
 import { PASSWORD_MIN_LENGTH, PASSWORD_MAX_CODE_UNITS, passwordValidationError } from '../shared/password-policy.js'
 
 const LEGACY_TOKEN_KEY = 'borealis.admin-token.v1'
 const THEME_KEY = 'borealis.theme.v1'
 type Page = 'home' | 'apps' | 'pair' | 'profile'
 type Theme = 'system' | 'light' | 'dark'
-type CompanionData = { allowlist: AllowlistItem[]; devices: DeviceSummary[] }
+type CompanionData = { library: AllowlistItem[]; devices: DeviceSummary[] }
 type AccountResponse = { account: AccountSummary }
 
 const borealisMark = (
@@ -100,7 +101,7 @@ export function App() {
       <main className="main" id="main" tabIndex={-1}>
         {checkingSession ? <div className="layout"><p className="status-line" role="status">Opening your companion…</p></div>
           : sessionError ? <div className="auth-layout"><div><h1>Could not open Borealis.</h1><p className="error" role="alert">{sessionError}</p><button className="action" onClick={() => setSessionCheck((current) => current + 1)}>Try again</button></div></div>
-            : account ? page === 'profile' ? <Profile account={account} onSignOut={signOut} onLock={lock} /> : <Companion key={account.id} account={account} onLock={lock} page={page} />
+            : account ? page === 'profile' ? <Profile account={account} onSignOut={signOut} onLock={lock} /> : <Companion key={account.id} onLock={lock} page={page} />
               : <AccountGate onSignIn={signedIn} notice={authNotice} />}
       </main>
       <footer className="footer"><span>Companion for a more intentional phone.</span><span>Borealis · Light Phone III</span></footer>
@@ -196,7 +197,7 @@ function Profile({ account, onSignOut, onLock }: { account: AccountSummary; onSi
   return <div className="layout">
     <aside className="intro"><p className="kicker">Profile</p><h1>A place of your own.</h1><p className="lede">Your account keeps your apps and phones together. No email address needed.</p></aside>
     <div className="workspace">{error ? <p className="error" role="alert">{error}</p> : null}{notice ? <p className="notice" role="status">{notice}</p> : null}
-      <Section id="account" label="Account" title={account.username}><p className="section-copy">Created {formatTime(account.createdAt)}.{account.role === 'curator' ? ' You curate the apps available through Borealis.' : ' Your apps and phones belong to this account.'}</p></Section>
+      <Section id="account" label="Account" title={account.username}><p className="section-copy">Created {formatTime(account.createdAt)}. Your library and phones belong to this account.</p></Section>
       <Section id="account-access" label="Access" title="Your password"><p className="section-copy">Keep your username and password somewhere safe. There’s no email password reset.</p>
         {changingPassword ? <form className="password-form" onSubmit={changePassword}>
           <input type="hidden" name="username" autoComplete="username" value={account.username} />
@@ -212,8 +213,9 @@ function Profile({ account, onSignOut, onLock }: { account: AccountSummary; onSi
   </div>
 }
 
-function Companion({ account, onLock, page }: { account: AccountSummary; onLock: () => void; page: Exclude<Page, 'profile'> }) {
-  const [data, setData] = useState<CompanionData>({ allowlist: [], devices: [] })
+function Companion({ onLock, page }: { onLock: () => void; page: Exclude<Page, 'profile'> }) {
+  const [refreshGuard] = useState(createRequestGuard)
+  const [data, setData] = useState<CompanionData>({ library: [], devices: [] })
   const [selectedDeviceId, setSelectedDeviceId] = useState('')
   const [jobs, setJobs] = useState<JobSummary[]>([])
   const [revision, setRevision] = useState(0)
@@ -235,26 +237,37 @@ function Companion({ account, onLock, page }: { account: AccountSummary; onLock:
   const selectedDevice = data.devices.find((device) => device.id === selectedDeviceId && !device.revokedAt && device.activatedAt) ?? null
   const readyPhones = data.devices.filter((device) => !device.revokedAt && device.activatedAt)
   const activePhones = data.devices.filter((device) => !device.revokedAt)
-  const approvedPackages = new Set(data.allowlist.map((item) => item.packageName))
-  const availableResults = results.filter((item) => !approvedPackages.has(item.packageName))
-  const curator = account.role === 'curator'
+  const libraryPackages = new Set(data.library.map((item) => item.packageName))
+  const availableResults = results.filter((item) => !libraryPackages.has(item.packageName))
 
   const handleError = useCallback((caught: unknown) => {
+    if (!refreshGuard.isMounted) return
     if (caught instanceof ApiError && caught.status === 401) onLock()
     else setError(messageFor(caught))
-  }, [onLock])
+  }, [onLock, refreshGuard])
   const refresh = useCallback(async () => {
-    const [apps, phones] = await Promise.all([
-      apiRequest<{ items: AllowlistItem[] }>('/me/apps'),
-      apiRequest<{ devices: DeviceSummary[] }>('/me/devices'),
-    ])
-    setData({ allowlist: apps.items, devices: phones.devices })
-    setSelectedDeviceId((current) => phones.devices.some((phone) => phone.id === current && !phone.revokedAt && phone.activatedAt) ? current : phones.devices.find((phone) => !phone.revokedAt && phone.activatedAt)?.id ?? '')
-    setSelectedApps((current) => current.filter((name) => apps.items.some((item) => item.packageName === name)))
-    setSelectedResults((current) => current.filter((name) => !apps.items.some((item) => item.packageName === name)))
-    setRevision((current) => current + 1)
-  }, [])
-  useEffect(() => { void refresh().catch(handleError).finally(() => setLoading(false)) }, [refresh, handleError])
+    if (!refreshGuard.isMounted) return
+    const isCurrent = refreshGuard.begin()
+    try {
+      const [apps, phones] = await Promise.all([
+        apiRequest<{ items: AllowlistItem[] }>('/me/apps'),
+        apiRequest<{ devices: DeviceSummary[] }>('/me/devices'),
+      ])
+      if (!isCurrent()) return
+      setData({ library: apps.items, devices: phones.devices })
+      setSelectedDeviceId((current) => phones.devices.some((phone) => phone.id === current && !phone.revokedAt && phone.activatedAt) ? current : phones.devices.find((phone) => !phone.revokedAt && phone.activatedAt)?.id ?? '')
+      setSelectedApps((current) => current.filter((name) => apps.items.some((item) => item.packageName === name)))
+      setSelectedResults((current) => current.filter((name) => !apps.items.some((item) => item.packageName === name)))
+      setRevision((current) => current + 1)
+    } catch (caught) {
+      if (isCurrent()) throw caught
+    }
+  }, [refreshGuard])
+  useEffect(() => {
+    refreshGuard.mount()
+    void refresh().catch(handleError).finally(() => { if (refreshGuard.isMounted) setLoading(false) })
+    return () => refreshGuard.unmount()
+  }, [refresh, handleError, refreshGuard])
   useEffect(() => {
     let current = true
     setJobs([]); setJobsLoading(Boolean(selectedDeviceId))
@@ -268,6 +281,8 @@ function Companion({ account, onLock, page }: { account: AccountSummary; onLock:
   async function runAction(name: string, action: () => Promise<void>, reload = true): Promise<boolean> {
     if (busyRef.current) return false
     busyRef.current = true
+    // A response fetched before a mutation must not overwrite its optimistic updates.
+    if (reload) refreshGuard.invalidate()
     setBusy(name); setError(''); setNotice('')
     try {
       await action()
@@ -295,31 +310,11 @@ function Companion({ account, onLock, page }: { account: AccountSummary; onLock:
     if (!selected.length) return
     await runAction('add', async () => {
       for (const item of selected) {
-        if (curator) {
-          try {
-            await apiRequest('/admin/allowlist', { method: 'POST', body: {
-              packageName: item.packageName, displayName: item.displayName, publisher: item.publisher || 'Publisher not listed', reason: 'Selected by the curator for essential use.', signerSha256: null,
-            } })
-          } catch (caught) { if (!(caught instanceof ApiError) || caught.status !== 409) throw caught }
-        }
         const response = await apiRequest<{ item: AllowlistItem }>('/me/apps', { method: 'POST', body: { packageName: item.packageName } })
-        setData((current) => ({ ...current, allowlist: [...current.allowlist.filter((existing) => existing.packageName !== item.packageName), response.item] }))
+        setData((current) => ({ ...current, library: [...current.library.filter((existing) => existing.packageName !== item.packageName), response.item] }))
         setSelectedResults((current) => current.filter((name) => name !== item.packageName))
       }
-      setNotice(`${selected.length === 1 ? selected[0].displayName : `${selected.length} apps`} added to your apps. Select below to send to a phone.`)
-    })
-  }
-  async function sendSelected() {
-    if (!selectedDevice || !selectedApps.length) return
-    const phone = selectedDevice
-    const chosen = [...selectedApps]
-    await runAction('send', async () => {
-      for (const packageName of chosen) {
-        if (!phone.assignments.includes(packageName)) await apiRequest(`/me/devices/${phone.id}/assignments`, { method: 'POST', body: { packageName } })
-        setSelectedApps((current) => current.filter((name) => name !== packageName))
-      }
-      setConfirmRemoval(false)
-      setNotice(`Your selection is available to ${phone.label}. Open Borealis on the phone to continue.`)
+      setNotice(`${selected.length === 1 ? selected[0].displayName : `${selected.length} apps`} added to your library. Open Borealis on your phone to install.`)
     })
   }
   async function removeSelected() {
@@ -329,7 +324,7 @@ function Companion({ account, onLock, page }: { account: AccountSummary; onLock:
         await apiRequest(`/me/apps/${encodeURIComponent(packageName)}`, { method: 'DELETE' })
         setSelectedApps((current) => current.filter((name) => name !== packageName))
       }
-      setNotice('Apps removed from Borealis. Apps already installed on a phone have not been uninstalled.')
+      setNotice('Apps removed from your library. Apps already installed on a phone have not been uninstalled.')
     })
     if (ok) setConfirmRemoval(false)
   }
@@ -356,22 +351,6 @@ function Companion({ account, onLock, page }: { account: AccountSummary; onLock:
     })
     if (ok) setRevokeId('')
   }
-  async function queue(packageName: string) {
-    if (!selectedDevice) return
-    await runAction('queue', async () => {
-      await apiRequest(`/me/devices/${selectedDevice.id}/jobs`, { method: 'POST', body: { packageName } })
-      setNotice('An install or update check is waiting for your phone to sync.')
-    })
-  }
-  async function approvePublisher(job: JobSummary, signer: string) {
-    const app = data.allowlist.find((item) => item.packageName === job.packageName)
-    if (!app || !selectedDevice || !curator) return
-    await runAction('publisher', async () => {
-      await apiRequest(`/admin/allowlist/${encodeURIComponent(app.packageName)}`, { method: 'PUT', body: { displayName: app.displayName, publisher: app.publisher, reason: app.reason, signerSha256: signer } })
-      await apiRequest(`/me/devices/${selectedDevice.id}/jobs`, { method: 'POST', body: { packageName: app.packageName } })
-      setNotice(`${app.displayName}'s publisher approved. Installation can continue after the next phone sync.`)
-    })
-  }
 
   const messages = <>{error ? <div className="error" role="alert">{error}</div> : null}{notice ? <div className="notice" role="status">{notice}</div> : null}{loading ? <p className="status-line" role="status">Loading your companion…</p> : null}</>
   const refreshButton = <button className="action secondary" disabled={Boolean(busy)} onClick={() => void runAction('refresh', async () => { setNotice('Companion refreshed.') })}>{busy === 'refresh' ? 'Refreshing…' : 'Refresh'}</button>
@@ -387,57 +366,41 @@ function Companion({ account, onLock, page }: { account: AccountSummary; onLock:
   </div>
 
   if (page === 'home') return <div className="layout">
-    <aside className="intro"><p className="kicker">Home</p><h1>Keep your phone simple.</h1><p className="lede">A place for the few apps you need. Choose them here. Leave the browsing behind.</p><dl className="stats"><div><dt>Phones</dt><dd>{readyPhones.length} paired</dd></div><div><dt>Your apps</dt><dd>{data.allowlist.length} chosen</dd></div></dl><nav className="section-index" aria-label="Home sections"><a href="#/home/phones">Phones</a><a href="#/home/activity">Activity</a><a href="#/apps">Choose apps <span aria-hidden="true">↗</span></a></nav></aside>
+    <aside className="intro"><p className="kicker">Home</p><h1>Keep your phone simple.</h1><p className="lede">Find the apps you need here. Add them to your library, then install them on your phone.</p><dl className="stats"><div><dt>Phones</dt><dd>{readyPhones.length} paired</dd></div><div><dt>Library</dt><dd>{data.library.length} apps</dd></div></dl><nav className="section-index" aria-label="Home sections"><a href="#/home/phones">Phones</a><a href="#/home/activity">Activity</a><a href="#/apps">Your library <span aria-hidden="true">↗</span></a></nav></aside>
     <div className="workspace">{messages}
       <Section id="phones" label="Phones" title="Your connected phones" action={<a className="action" href="#/pair">Pair a phone</a>}>
-        <p className="section-copy">Each phone receives only the apps you send to it.</p>
+        <p className="section-copy">Your library is available on every paired phone. Open Borealis on your phone to install apps and check for updates.</p>
         {!data.devices.length ? <p className="empty">No phones paired yet. Open Borealis on your phone to get started.</p> : <div className="list">{data.devices.map((device) => <article className="list-row" key={device.id}>
-          <div className="row-copy"><h3 className="row-title">{device.label}</h3><p className="row-meta">{device.revokedAt ? 'Disconnected' : !device.activatedAt ? 'Confirm pairing on your phone' : device.lastSeenAt ? `Last synced ${formatTime(device.lastSeenAt)}` : 'Paired · waiting for first sync'}</p>{!device.revokedAt && device.activatedAt ? <p className="row-meta">{device.assignments.length} {device.assignments.length === 1 ? 'app' : 'apps'} selected</p> : null}
+          <div className="row-copy"><h3 className="row-title">{device.label}</h3><p className="row-meta">{device.revokedAt ? 'Disconnected' : !device.activatedAt ? 'Confirm pairing on your phone' : device.lastSeenAt ? `Last synced ${formatTime(device.lastSeenAt)}` : 'Paired · waiting for first sync'}</p>
             {revokeId === device.id ? <div className="confirm-panel"><p>Disconnect this phone? It will stop receiving apps and updates from Borealis. Installed apps will remain.</p><div className="actions"><button className="action secondary" disabled={Boolean(busy)} onClick={() => setRevokeId('')}>Cancel</button><button className="action" disabled={Boolean(busy)} onClick={() => void revokePhone(device)}>Disconnect phone</button></div></div> : null}
           </div>{!device.revokedAt && revokeId !== device.id ? <button className="action secondary" disabled={Boolean(busy)} onClick={() => setRevokeId(device.id)} aria-label={`Disconnect ${device.label}`}>Disconnect</button> : null}
         </article>)}</div>}
       </Section>
-      <Section id="activity" label="Activity" title="What’s reaching your phone" action={refreshButton}>
+      <Section id="activity" label="Activity" title="Latest installation attempts" action={refreshButton}>
+        <p className="section-copy">The latest request for each app is shown here. Your phone shows what’s installed and whether an update is available.</p>
         {readyPhones.length ? <PhoneSelect phones={readyPhones} selected={selectedDeviceId} onSelect={setSelectedDeviceId} disabled={Boolean(busy)} /> : <p className="empty">Pair a phone to see install and update activity here.</p>}
-        {jobsLoading ? <p className="status-line" role="status">Loading phone activity…</p> : selectedDevice ? <>{!jobs.length ? <p className="empty">Nothing waiting. <a className="inline-link" href="#/apps">Choose an app</a> to send to your phone.</p> : <div className="list">{jobs.map((job) => <JobRow key={job.id} job={job} busy={Boolean(busy)} canAct={approvedPackages.has(job.packageName) && selectedDevice.assignments.includes(job.packageName)} canApprove={curator} onQueue={queue} onApprove={approvePublisher} />)}</div>}</> : null}
+        {jobsLoading ? <p className="status-line" role="status">Loading phone activity…</p> : selectedDevice ? <JobActivity jobs={jobs} /> : null}
       </Section>
     </div>
   </div>
 
   return <div className="layout">
-    <aside className="intro"><p className="kicker">Apps</p><h1>Choose what reaches your phone.</h1><p className="lede">{curator ? 'Choose essential apps for the shared catalog, then select what reaches your own phones.' : 'Find an app in the approved catalog, add it to your collection, then choose which phone receives it.'}</p><dl className="stats"><div><dt>Your apps</dt><dd>{data.allowlist.length} chosen</dd></div><div><dt>Phones</dt><dd>{readyPhones.length} paired</dd></div></dl><nav className="section-index" aria-label="App sections"><a href="#/apps/find">Find</a><a href="#/apps/your-apps">Your apps</a><a href="#/home/activity">Phone activity <span aria-hidden="true">↗</span></a></nav></aside>
+    <aside className="intro"><p className="kicker">Apps</p><h1>Choose what reaches your phone.</h1><p className="lede">Search for an app and add it to your library. It appears in Borealis on your paired phones, ready to install.</p><dl className="stats"><div><dt>Library</dt><dd>{data.library.length} apps</dd></div><div><dt>Phones</dt><dd>{readyPhones.length} paired</dd></div></dl><nav className="section-index" aria-label="App sections"><a href="#/apps/find">Find</a><a href="#/apps/your-apps">Your library</a><a href="#/home/activity">Phone activity <span aria-hidden="true">↗</span></a></nav></aside>
     <div className="workspace">{messages}
-      <Section id="find" label="Find" title="Find the app you need."><p className="section-copy">{curator ? 'You’re searching Google Play as a curator. Adding an app also approves it for everyone using Borealis. Choose only essential apps that belong on a Light Phone.' : 'Search the apps approved for Borealis. Your selections stay private, and there’s no store to browse on your phone.'}</p><form onSubmit={search} role="search"><label className="field" htmlFor="catalog-search"><span className="label">Search apps</span><input id="catalog-search" type="search" placeholder="App or publisher name" value={query} onChange={(event) => setQuery(event.target.value)} autoComplete="off" minLength={2} maxLength={120} required /></label><div className="actions"><button className="action" disabled={Boolean(busy) || query.trim().length < 2}>{busy === 'search' ? 'Searching…' : 'Search'}</button></div></form></Section>
+      <Section id="find" label="Find" title="Find the app you need."><p className="section-copy">Search Google Play for essential apps. Borealis filters out games, social networks, email, browsers, and entertainment. Your library stays private.</p><form onSubmit={search} role="search"><label className="field" htmlFor="catalog-search"><span className="label">Search apps</span><input id="catalog-search" type="search" placeholder="App or publisher name" value={query} onChange={(event) => setQuery(event.target.value)} autoComplete="off" minLength={2} maxLength={120} required /></label><div className="actions"><button className="action" disabled={Boolean(busy) || query.trim().length < 2}>{busy === 'search' ? 'Searching…' : 'Search'}</button></div></form></Section>
       {searchedQuery !== null ? <Section id="results" label="Results" title={searchedQuery} action={<span className="label">{results.length} found</span>}>
-        {!results.length ? <p className="empty">No apps found. Try another name or publisher.</p> : <>
+        {!results.length ? <p className="empty">No eligible apps found. Try another name or publisher.</p> : <>
           <div className="actions"><button className="action secondary" disabled={Boolean(busy) || !availableResults.length} onClick={() => setSelectedResults(selectedResults.length === availableResults.length ? [] : availableResults.map((item) => item.packageName))}>{availableResults.length > 0 && selectedResults.length === availableResults.length ? 'Clear selection' : 'Select all'}</button></div>
           <div className="list">{results.map((item) => {
-            const added = approvedPackages.has(item.packageName)
+            const added = libraryPackages.has(item.packageName)
             return <label className="list-row selection-row" key={item.packageName}><input type="checkbox" checked={selectedResults.includes(item.packageName)} onChange={() => toggleSelection(setSelectedResults, item.packageName)} disabled={added || Boolean(busy)} aria-label={`Select ${item.displayName}`} /><span className="row-copy"><strong className="row-title">{item.displayName}</strong><span className="row-meta">{item.publisher}</span><span className="technical">{item.packageName}</span></span>{added ? <span className="row-status">Added</span> : null}</label>
           })}</div>
-          {selectedResults.length ? <div className="selection-rail"><span className="selection-count" aria-live="polite">{selectedResults.length} selected</span><button className="action" disabled={Boolean(busy)} onClick={() => void addSelected()}>{busy === 'add' ? 'Adding…' : 'Add to your apps'}</button></div> : null}
+          {selectedResults.length ? <div className="selection-rail"><span className="selection-count" aria-live="polite">{selectedResults.length} selected</span><button className="action" disabled={Boolean(busy)} onClick={() => void addSelected()}>{busy === 'add' ? 'Adding…' : 'Add to library'}</button></div> : null}
         </>}
       </Section> : null}
-      <Section id="your-apps" label="Your apps" title="Only what you’ve chosen." action={refreshButton}>
-        <p className="section-copy">Select apps to send to a paired phone. Removing an app here stops future access through Borealis; it does not uninstall it.</p>
-        {!data.allowlist.length ? <p className="empty">No apps chosen yet. Search above to add your first.</p> : <>
-          <div className="actions"><button className="action secondary" disabled={Boolean(busy)} onClick={() => { setSelectedApps(selectedApps.length === data.allowlist.length ? [] : data.allowlist.map((item) => item.packageName)); setConfirmRemoval(false) }}>{selectedApps.length === data.allowlist.length ? 'Clear selection' : 'Select all'}</button></div>
-          <div className="list">{data.allowlist.map((item) => <article className="list-row selection-row" key={item.packageName} onClick={(event) => {
-            if (busy || (event.target as HTMLElement).closest('input, label, button, a, select, details')) return
-            toggleSelection(setSelectedApps, item.packageName)
-            setConfirmRemoval(false)
-          }}>
-            <input id={`app-${item.packageName}`} type="checkbox" checked={selectedApps.includes(item.packageName)} onChange={() => { toggleSelection(setSelectedApps, item.packageName); setConfirmRemoval(false) }} disabled={Boolean(busy)} aria-label={`Select ${item.displayName}`} />
-            <div className="row-copy"><label htmlFor={`app-${item.packageName}`}><strong className="row-title">{item.displayName}</strong><span className="row-meta">{item.publisher}</span></label><details className="details"><summary>App details</summary><p className="technical">{item.packageName}</p><p className="row-meta">{item.signerSha256 ? 'Publisher signature approved.' : 'Publisher signature will need review before the first installation.'}</p>{item.signerSha256 ? <code className="technical">{item.signerSha256}</code> : null}</details></div>
-            {selectedDevice?.assignments.includes(item.packageName) ? <span className="row-status">Sent to phone</span> : null}
-          </article>)}</div>
-          {selectedApps.length ? <>
-            <div className="selection-rail"><span className="selection-count" aria-live="polite">{selectedApps.length} selected</span>{readyPhones.length ? <PhoneSelect phones={readyPhones} selected={selectedDeviceId} onSelect={setSelectedDeviceId} disabled={Boolean(busy)} /> : <a className="action" href="#/pair">Pair a phone</a>}<button className="action" disabled={Boolean(busy) || !selectedDevice} onClick={() => void sendSelected()}>{busy === 'send' ? 'Sending…' : 'Send to phone'}</button><button className="action secondary" disabled={Boolean(busy)} onClick={() => setConfirmRemoval(true)}>Remove</button></div>
-            {confirmRemoval ? <div className="confirm-panel" role="group" aria-label="Confirm app removal"><h3>Remove {selectedApps.length === 1 ? 'this app' : 'these apps'} from your apps?</h3><p>This stops access for your connected phones and cancels your outstanding requests. Installed apps and other people’s selections stay unchanged.</p><div className="actions"><button className="action secondary" disabled={Boolean(busy)} onClick={() => setConfirmRemoval(false)}>Cancel</button><button className="action" disabled={Boolean(busy)} onClick={() => void removeSelected()}>{busy === 'remove' ? 'Removing…' : 'Remove from apps'}</button></div></div> : null}
-          </> : null}
-        </>}
-        {!readyPhones.length && !loading ? <p className="field-hint">{activePhones.length ? 'Finish pairing on your phone, then refresh to send apps.' : 'You can choose apps now and pair a phone later.'}</p> : null}
-      </Section>
+      <LibrarySection items={data.library} selected={selectedApps} busy={busy} confirmRemoval={confirmRemoval} action={refreshButton}
+        onSelect={(names) => { setSelectedApps(names); setConfirmRemoval(false) }} onConfirmRemoval={setConfirmRemoval} onRemove={removeSelected} />
+      {!readyPhones.length && !loading ? <p className="field-hint">{activePhones.length ? 'Finish pairing on your phone to open your library there.' : 'You can choose apps now and pair a phone later.'}</p> : null}
     </div>
   </div>
 }
@@ -448,19 +411,65 @@ function Section({ id, label, title, action, children }: { id: string; label: st
 function PhoneSelect({ phones, selected, onSelect, disabled }: { phones: DeviceSummary[]; selected: string; onSelect: (id: string) => void; disabled: boolean }) {
   return <label className="field select-phone"><span className="label">Phone</span><select value={selected} onChange={(event) => onSelect(event.target.value)} disabled={disabled}>{phones.map((phone) => <option value={phone.id} key={phone.id}>{phone.label}</option>)}</select></label>
 }
-function JobRow({ job, busy, canAct, canApprove, onQueue, onApprove }: { job: JobSummary; busy: boolean; canAct: boolean; canApprove: boolean; onQueue: (name: string) => Promise<void>; onApprove: (job: JobSummary, signer: string) => Promise<void> }) {
-  const signer = job.observedSignerSha256[0]
-  const retry = ['failed', 'cancelled', 'succeeded'].includes(job.status)
-  return <article className="list-row"><div className="row-copy"><h3 className="row-title">{job.displayName}</h3><p className="row-meta">{humanStatus(job.status)}{job.installedVersionCode !== null ? ` · version ${job.installedVersionCode}` : ''}</p>{job.message ? <p className="row-meta">{job.message}</p> : null}
-    {job.status === 'review_required' && signer && canAct ? canApprove ? <details className="details"><summary>Review publisher</summary><p className="row-meta">Compare this signing fingerprint with a trusted copy of the app before approving it. This approves the publisher for everyone using Borealis, not only your phone.</p><code className="technical">{signer}</code><div className="actions"><button className="action" disabled={busy} onClick={() => void onApprove(job, signer)}>Approve publisher and continue</button></div></details> : <p className="row-meta">A Borealis curator needs to approve this app’s publisher before installation can continue.</p> : null}
+export function LibrarySection({ items, selected, busy, confirmRemoval, action, onSelect, onConfirmRemoval, onRemove }: {
+  items: AllowlistItem[]; selected: string[]; busy: string; confirmRemoval: boolean; action?: ReactNode
+  onSelect: (names: string[]) => void; onConfirmRemoval: (confirm: boolean) => void; onRemove: () => Promise<void>
+}) {
+  const select = (name: string) => onSelect(selected.includes(name) ? selected.filter((item) => item !== name) : [...selected, name])
+  return <Section id="your-apps" label="Library" title="Only what you’ve chosen." action={action}>
+    <p className="section-copy">These apps appear on every paired phone after its next sync. Install them and check for updates in Borealis on your phone.</p>
+    {!items.length ? <p className="empty">Your library is empty. Search above to add your first app.</p> : <>
+      <div className="actions"><button className="action secondary" disabled={Boolean(busy)} onClick={() => onSelect(selected.length === items.length ? [] : items.map((item) => item.packageName))}>{selected.length === items.length ? 'Clear selection' : 'Select all'}</button></div>
+      <div className="list">{items.map((item) => <article className="list-row selection-row" key={item.packageName} onClick={(event) => {
+        if (busy || (event.target as HTMLElement).closest('input, label, button, a, select, details')) return
+        select(item.packageName)
+      }}>
+        <input id={`app-${item.packageName}`} type="checkbox" checked={selected.includes(item.packageName)} onChange={() => select(item.packageName)} disabled={Boolean(busy)} aria-label={`Select ${item.displayName}`} />
+        <div className="row-copy"><label htmlFor={`app-${item.packageName}`}><strong className="row-title">{item.displayName}</strong><span className="row-meta">{item.publisher}</span></label><details className="details"><summary>App details</summary><p className="technical">{item.packageName}</p></details></div>
+        <span className="row-status">In your library</span>
+      </article>)}</div>
+      {selected.length ? <>
+        <div className="selection-rail"><span className="selection-count" aria-live="polite">{selected.length} selected</span><button className="action" disabled={Boolean(busy)} onClick={() => onConfirmRemoval(true)}>Remove from library</button></div>
+        {confirmRemoval ? <div className="confirm-panel" role="group" aria-label="Confirm app removal"><h3>Remove {selected.length === 1 ? 'this app' : 'these apps'} from your library?</h3><p>This stops future installs and updates through Borealis on your phones. Installed apps stay on your phone. Other people’s libraries stay unchanged.</p><div className="actions"><button className="action secondary" disabled={Boolean(busy)} onClick={() => onConfirmRemoval(false)}>Cancel</button><button className="action" disabled={Boolean(busy)} onClick={() => void onRemove()}>{busy === 'remove' ? 'Removing…' : 'Remove from library'}</button></div></div> : null}
+      </> : null}
+    </>}
+  </Section>
+}
+
+export function groupJobHistory(jobs: JobSummary[]): { latest: JobSummary[]; earlier: JobSummary[] } {
+  const packages = new Set<string>()
+  const latest: JobSummary[] = []
+  const earlier: JobSummary[] = []
+  for (const job of [...jobs].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))) {
+    if (packages.has(job.packageName)) earlier.push(job)
+    else { packages.add(job.packageName); latest.push(job) }
+  }
+  return { latest, earlier }
+}
+
+export function JobActivity({ jobs }: { jobs: JobSummary[] }) {
+  if (!jobs.length) return <p className="empty">No installation requests yet. <a className="inline-link" href="#/apps">Add an app to your library</a>, then open Borealis on your phone to install it.</p>
+  const { latest, earlier } = groupJobHistory(jobs)
+  return <>
+    <div className="list">{latest.map((job) => <JobRow key={job.id} job={job} />)}</div>
+    {earlier.length ? <details className="details"><summary>Earlier attempts</summary><p className="section-copy">Past requests, not the current state of your phone. Old failures remain here even after a later installation succeeds.</p><div className="list">{earlier.map((job) => <JobRow key={job.id} job={job} historical />)}</div></details> : null}
+  </>
+}
+
+function JobRow({ job, historical = false }: { job: JobSummary; historical?: boolean }) {
+  const message = job.status === 'review_required'
+    ? 'This request used an older installation flow. Open Borealis on your phone to install from your library.'
+    : job.message
+  return <article className="list-row"><div className="row-copy"><h3 className="row-title">{job.displayName}</h3><p className="row-meta">{humanStatus(job.status)}{job.installedVersionCode !== null ? ` · version ${job.installedVersionCode}` : ''}</p>{message ? <p className="row-meta">{message}</p> : null}
+    {!historical && job.status === 'failed' ? <p className="row-meta">Open Borealis on your phone to try again.</p> : null}
     <details className="details"><summary>Request details</summary><p className="technical">{job.packageName}</p><p className="row-meta">Requested {formatTime(job.createdAt)}</p></details>
-  </div>{retry && canAct ? <button className="action secondary" disabled={busy} onClick={() => void onQueue(job.packageName)}>{job.status === 'succeeded' ? 'Check for update' : 'Try again'}</button> : null}</article>
+  </div></article>
 }
 function toggleSelection(set: (update: (current: string[]) => string[]) => void, name: string) {
   set((current) => current.includes(name) ? current.filter((item) => item !== name) : [...current, name])
 }
 function humanStatus(status: JobSummary['status']): string {
-  return { queued: 'Waiting for phone', delivered: 'Received by phone', installing: 'Preparing installation', awaiting_user_action: 'Confirm installation on your phone', review_required: 'Publisher review needed', succeeded: 'Installed', failed: 'Installation failed', cancelled: 'Cancelled' }[status]
+  return { queued: 'Waiting for phone', delivered: 'Received by phone', installing: 'Preparing installation', awaiting_user_action: 'Confirm installation on your phone', review_required: 'Previous request ended', succeeded: 'Installation completed', failed: 'Installation failed', cancelled: 'Cancelled' }[status]
 }
 function formatTime(value: string): string {
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { Client, InValue, Transaction, TransactionMode } from '@libsql/client'
-import type { AccountSummary, AllowlistItem, DeviceSummary, JobSummary, PairingSummary } from '../shared/api.js'
+import type { AccountSummary, AllowlistItem, DeviceLibraryItem, DeviceSummary, JobSummary, PairingSummary, PlaySearchResult } from '../shared/api.js'
 import { migrateBetterAuth } from './better-auth-migration.js'
 import { generateSigningKey, type PersistedSigningKey } from './crypto.js'
 
@@ -414,6 +414,61 @@ export class BorealisDatabase {
     })
   }
 
+  async addResolvedAccountApp(accountId: string, app: PlaySearchResult, now: string): Promise<AllowlistItem | null> {
+    return this.transaction(async (tx) => {
+      if (!await first(tx, 'SELECT id FROM accounts WHERE id = ?', [accountId])) return null
+      // Retain the existing table as public metadata storage so old libraries
+      // survive. It no longer represents curator permissions or publisher trust.
+      await tx.execute({
+        sql: `INSERT INTO allowlist (package_name, display_name, publisher, reason, signer_sha256, created_at, updated_at)
+          VALUES (?, ?, ?, 'Practical tool from Google Play.', NULL, ?, ?)
+          ON CONFLICT(package_name) DO UPDATE SET display_name = excluded.display_name,
+            publisher = excluded.publisher, updated_at = excluded.updated_at`,
+        args: [app.packageName, app.displayName, app.publisher, now, now],
+      })
+      const added = await tx.execute({
+        sql: 'INSERT OR IGNORE INTO account_apps (account_id, package_name, created_at) VALUES (?, ?, ?)',
+        args: [accountId, app.packageName, now],
+      })
+      if (added.rowsAffected === 1) {
+        await tx.execute({
+          sql: 'UPDATE devices SET revision = revision + 1 WHERE owner_account_id = ? AND revoked_at IS NULL',
+          args: [accountId],
+        })
+      }
+      return getAllowlist(tx, app.packageName)
+    })
+  }
+
+  async listDeviceLibrary(deviceId: string): Promise<DeviceLibraryItem[]> {
+    return this.run(async () => {
+      const rows = await all<{ package_name: string; display_name: string }>(this.client,
+        `SELECT allowlist.package_name, allowlist.display_name FROM devices
+          JOIN account_apps ON account_apps.account_id = devices.owner_account_id
+          JOIN allowlist ON allowlist.package_name = account_apps.package_name
+          WHERE devices.id = ? AND devices.activated_at IS NOT NULL AND devices.revoked_at IS NULL
+          ORDER BY allowlist.display_name COLLATE NOCASE`, [deviceId])
+      return rows.map((row) => ({ packageName: row.package_name, displayName: row.display_name }))
+    })
+  }
+
+  async queueLibraryJob(deviceId: string, packageName: string, now: string, ownerAccountId?: string): Promise<JobSummary | null> {
+    return this.transaction(async (tx) => {
+      const device = await getOwnedDeviceRow(tx, deviceId, ownerAccountId)
+      if (!device || !device.activated_at || device.revoked_at || !device.owner_account_id
+        || !await hasAccountApp(tx, device.owner_account_id, packageName)) return null
+      const app = await getAllowlist(tx, packageName)
+      if (!app) return null
+      const active = await first<JobRow>(tx, `SELECT * FROM jobs WHERE device_id = ? AND package_name = ?
+        AND status IN ('queued', 'delivered', 'installing', 'awaiting_user_action') ORDER BY created_at DESC LIMIT 1`,
+      [deviceId, packageName])
+      if (active) return mapJob(active)
+      // New jobs never copy legacy shared publisher approvals. Android checks
+      // the signer of installed versions before accepting an update.
+      return insertJob(tx, deviceId, { ...app, signerSha256: null }, randomUUID(), now)
+    })
+  }
+
   async addAccountApp(accountId: string, packageName: string, now: string): Promise<AllowlistItem | null> {
     return this.transaction(async (tx) => {
       const allowed = await getAllowlist(tx, packageName)
@@ -440,9 +495,8 @@ export class BorealisDatabase {
         args: [now, packageName, accountId],
       })
       await tx.execute({
-        sql: `UPDATE devices SET revision = revision + 1 WHERE owner_account_id = ?
-          AND id IN (SELECT device_id FROM assignments WHERE package_name = ?)`,
-        args: [accountId, packageName],
+        sql: 'UPDATE devices SET revision = revision + 1 WHERE owner_account_id = ? AND revoked_at IS NULL',
+        args: [accountId],
       })
       await tx.execute({
         sql: `DELETE FROM assignments WHERE package_name = ?
@@ -730,11 +784,14 @@ export class BorealisDatabase {
       if (!device) return []
       await tx.execute({
         sql: `UPDATE jobs SET status = 'delivered', delivered_at = COALESCE(delivered_at, ?)
-          WHERE device_id = ? AND status = 'queued'`,
-        args: [now, deviceId],
+          WHERE device_id = ? AND status = 'queued'
+            AND (? IS NULL OR package_name IN (SELECT package_name FROM account_apps WHERE account_id = ?))`,
+        args: [now, deviceId, device.owner_account_id, device.owner_account_id],
       })
       const rows = await all<JobRow>(tx, `SELECT * FROM jobs
-        WHERE device_id = ? AND status IN ('queued', 'delivered') ORDER BY created_at`, [deviceId])
+        WHERE device_id = ? AND status IN ('queued', 'delivered')
+          AND (? IS NULL OR package_name IN (SELECT package_name FROM account_apps WHERE account_id = ?))
+        ORDER BY created_at`, [deviceId, device.owner_account_id, device.owner_account_id])
       await tx.execute({ sql: 'UPDATE devices SET last_seen_at = ? WHERE id = ?', args: [now, deviceId] })
       return rows.map((row) => ({
         ...mapJob(row),

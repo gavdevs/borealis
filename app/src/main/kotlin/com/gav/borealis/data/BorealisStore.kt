@@ -7,6 +7,9 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.flow.first
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 
 class BorealisStore(private val dataStore: DataStore<Preferences>) {
     suspend fun loadSession(): BorealisSession? {
@@ -69,6 +72,15 @@ class BorealisStore(private val dataStore: DataStore<Preferences>) {
 
     suspend fun lastRevision(): Long = dataStore.data.first()[LAST_REVISION] ?: 0L
 
+    suspend fun loadLibrary(): List<LibraryApp> {
+        val encoded = dataStore.data.first()[LIBRARY] ?: return emptyList()
+        return runCatching { Json.decodeFromString<List<LibraryApp>>(encoded) }.getOrDefault(emptyList())
+    }
+
+    suspend fun saveLibrary(library: List<LibraryApp>) {
+        dataStore.edit { it[LIBRARY] = Json.encodeToString(library) }
+    }
+
     suspend fun saveRevision(revision: Long) {
         dataStore.edit { it[LAST_REVISION] = revision.coerceAtLeast(0L) }
     }
@@ -107,6 +119,7 @@ class BorealisStore(private val dataStore: DataStore<Preferences>) {
         val KEY_ID = stringPreferencesKey("key_id")
         val SIGNING_PUBLIC_KEY = stringPreferencesKey("signing_public_key")
         val LAST_REVISION = longPreferencesKey("last_revision")
+        val LIBRARY = stringPreferencesKey("library")
         val PENDING_INSTALL_JOB_ID = stringPreferencesKey("pending_install_job_id")
         val PENDING_INSTALL_SESSION_ID = intPreferencesKey("pending_install_session_id")
         val PENDING_INSTALL_PACKAGE = stringPreferencesKey("pending_install_package")

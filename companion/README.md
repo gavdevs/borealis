@@ -3,12 +3,12 @@
 Borealis is Gav's centrally hosted companion for the Borealis Light Phone
 installer. Members create an account, sign in, and pair their own phones; they
 do not configure a server or need an admin token. Search and policy live here;
-the phone receives only explicit, short-lived install jobs for assigned packages.
+the phone receives the user's library and short-lived install jobs for its packages.
 
 This service never proxies APK bytes and never accepts or stores Google account
 credentials. Catalog search reads public Google Play web metadata. The phone is
 responsible for obtaining the device-appropriate base and split APKs directly,
-verifying the Play-provided hashes, verifying package identity and signer pins,
+verifying Play-provided hashes, package identity, and installed-signature continuity,
 and invoking Android's installer.
 
 ## Interface reference
@@ -24,7 +24,7 @@ inline header SVG and `public/assets/borealis.svg` favicon. It remains monochrom
 visible at mobile sizes; the adjacent wordmark supplies its accessible name.
 
 - **Home:** connected phones and installation/update activity.
-- **Apps:** search, select results, add to your apps, then select and send to a phone.
+- **Apps:** search eligible Play apps and add to your library; it appears on every paired phone.
 - **Pairing:** enter a code, preview the requesting phone, explicitly approve it.
 - Package identifiers, signing fingerprints, and request diagnostics belong in
   expandable details, not the default workflow.
@@ -33,14 +33,15 @@ This is a React/TypeScript interface with Vite and plain CSS, a Hono API, and
 SQLite-compatible storage through libSQL. It supports either a local database
 or a hosted libSQL database on Turso. The signed-job protocol is unchanged.
 Accounts use usernames and passwords, without email. Each account has its own
-app collection and paired phones. A shared, curator-managed positive allowlist
-controls which packages can enter those collections; a public signup cannot
-approve arbitrary packages or edit publisher signing pins.
+library and paired phones. Automatic server-side category filtering and targeted
+email/browser exclusions govern new additions. There is no curator, shared
+publisher approval, or manual send-to-phone step. Unknown categories are excluded;
+category filtering is best effort, not a guarantee of an app's exact behavior.
 
 The shared service is hosted at `https://borealis.loosewire.dev`. Its Cloudflare
 Worker adapter and deployment pipeline provide
 edge throttling and persistent account limits. See the [deployment runbook](../docs/deployment.md)
-for operator deployment and verification; the full app-admission workflow remains unfinished.
+for operator deployment and verification.
 
 ## Run locally
 
@@ -96,8 +97,8 @@ stored.
   password in a password manager; having a session alone does not bypass the
   current-password requirement. Recovery needs a separately designed mechanism.
 - **Pair a phone:** sign in, enter the short-lived code shown by the phone app,
-  review the requesting phone, and approve it. Public signup always creates a
-  member account, including the first signup; it never grants curator privileges.
+  review the requesting phone, and approve it. Its library matches the account's,
+  including apps selected before this phone was paired.
 
 Better Auth's required email-shaped field uses the internal, non-deliverable
 alias `username@users.borealis.invalid`. The UI never asks for an email, no email
@@ -120,7 +121,7 @@ invalidates browser cookies and changes rate-limit bucket keys, but leaves
 password hashes, account ownership, phone credentials, and signing keys intact.
 Keep the database backups and operator token private.
 
-Signup, login, private curator provisioning, password changes, and pairing-code attempts have persistent
+Signup, login, password changes, and pairing-code attempts have persistent
 database-backed limits; login is also limited by normalized username. The Node
 adapter uses the actual socket peer, not caller-supplied forwarding headers.
 The Cloudflare adapter uses the platform's `CF-Connecting-IP` and an edge limiter
@@ -132,16 +133,13 @@ See [Better Auth security](https://better-auth.com/docs/reference/security),
 and [session guidance](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html).
 A production security audit has not been completed.
 
-## Private curator provisioning
+## Compatibility storage
 
-Curator provisioning belongs to the service operator, not the public login UI.
-The existing one-time `POST /api/borealis/v1/auth/bootstrap` endpoint requires
-the private `BOREALIS_ADMIN_TOKEN` plus a new username/password. Better Auth
-identity and domain member creation happen first; the subsequent owner claim
-atomically promotes that account and claims legacy unowned phones and app selections.
-The endpoint remains protected by its existing token, request guards, and rate limits.
-After provisioning, the token cannot create another curator or act as an API bearer.
-Do not delete the `bootstrap_claimed` metadata record or share the token with users.
+Legacy role, allowlist, assignment, and bootstrap records are retained without
+destructive data migration. They are not a public approval workflow. The old
+admin and bootstrap routes are unavailable; nobody needs promotion to use their
+library. Keep `BOREALIS_ADMIN_TOKEN` private and stable because it still derives
+cookie-signing and rate-limit secrets, despite its historical name.
 
 ## Turso database
 
@@ -194,8 +192,9 @@ References: [Turso TypeScript SDK](https://docs.turso.tech/sdk/ts/reference),
 
 ## Trust model
 
-- Admission is a positive allowlist. Search results, Play categories, and a
-  device request never approve a package automatically.
+- New library additions resolve canonical Play metadata and apply the server's
+  automatic category policy. Client-supplied names/categories never grant admission.
+  Installation authority is limited to the paired owner's current library.
 - The phone creates its own `brl_device_…` bearer and sends only its SHA-256
   digest during pairing.
 - The server generates an Ed25519 key once and persists it in SQLite. Pairing
@@ -206,11 +205,10 @@ References: [Turso TypeScript SDK](https://docs.turso.tech/sdk/ts/reference),
 - Signed payloads are device-bound, nonce-bearing, and expire after
   `BOREALIS_JOB_TTL_SECONDS`. The service signs a fresh envelope when an
   outstanding job is synced, so an offline phone does not receive a stale job.
-- A package without a signer pin is a review job, not permission to install.
-  The phone may download and validate Play hashes, but it reports the observed
-  signer with `review_required` and stops. The companion can then pin that
-  signer and queue a new signed job.
-- Removing an assignment or allowlist record cancels outstanding queued jobs.
+- First installs trust authenticated Play delivery plus native Android APK checks;
+  there is no manually approved publisher pin. Updates check installed signing
+  continuity in addition to package identity and artifact size/checksum validation.
+- Removing an app from the library cancels its outstanding jobs on this account's phones.
   Revoking a device invalidates its bearer for future syncs.
 
 ## Device API contract
@@ -249,10 +247,11 @@ user approves the displayed code in the web companion, call
 ### Sync
 
 Call `GET /device/sync` with the phone's original bearer. The response includes
-the device revision and signed jobs:
+the device revision, current library, and outstanding signed jobs:
 
 ```json
 {
+  "library": [{ "packageName": "example.bank", "displayName": "Daily Banking" }],
   "jobs": [
     {
       "keyId": "ed25519:…",
@@ -270,8 +269,11 @@ schemaVersion, jobId, deviceId, action, packageName, displayName,
 acceptedSignerSha256, issuedAt, expiresAt, nonce
 ```
 
-`action` is currently `install_or_update`. `acceptedSignerSha256` contains
-lowercase hexadecimal certificate SHA-256 values.
+`action` is currently `install_or_update`. `acceptedSignerSha256` remains for
+wire compatibility and is empty on new library jobs; it is not an approval gate.
+`POST /device/library/:packageName/job` uses the device bearer and returns
+`{job: SignedJobEnvelope}` only for a package in this phone owner's library.
+The phone requests it on Install/Update, then verifies the signed envelope.
 
 ### Report
 
@@ -286,9 +288,8 @@ lowercase hexadecimal certificate SHA-256 values.
 }
 ```
 
-`review_required` requires at least one observed signer and is accepted only
-for a job that had no signer pin. The server rejects `awaiting_user_action` and
-`succeeded` for an unpinned job.
+`review_required` is retained for legacy history. New phones proceed without a
+publisher-review step, and unpinned jobs can report installation or success.
 
 ## Companion API
 
@@ -300,30 +301,21 @@ session cookie, not the old admin bearer. Mutation requests also send
 - `POST /auth/signup` and `/auth/signin` → `{username,password}`.
 - `POST /auth/signout` → `{}`; revokes the current session.
 - `POST /auth/change-password` → `{currentPassword,newPassword}`.
-- `GET|POST /me/apps`; POST selects `{packageName}` from the approved catalog.
+- `GET|POST /me/apps`; POST selects `{packageName}` after canonical metadata/policy validation.
 - `DELETE /me/apps/:packageName`; affects only this account and its phones.
 - `GET /me/pairings`; lists only this account's claimed, non-activated pairings.
 - `POST /me/pairings/preview` and `/me/pairings/approve` → `{userCode}`.
   Unclaimed pairing codes cannot be enumerated.
 - `GET /me/devices`
 - `DELETE /me/devices/:deviceId`
-- `GET|POST /me/devices/:deviceId/assignments`
-- `DELETE /me/devices/:deviceId/assignments/:packageName`
 - `GET|POST /me/devices/:deviceId/jobs`
-- Curators only: `GET|POST /admin/allowlist` and
-  `GET|PUT|DELETE /admin/allowlist/:packageName`.
 
-`POST /auth/bootstrap` is reserved for the private operator provisioning described
-above; it is not part of the member signup or login workflow.
-
-`GET /catalog/search` requires sign-in. Members search only the approved
-catalog; curators can search public Play metadata to review and add packages.
-All phone operations, even for curators, are restricted to the account's own
-phones. Another account's device identifiers are treated as not found.
-
-Assigning an allowlisted package creates its first job. Posting to `/jobs`
-queues a later update or retry. APK URLs and bytes are deliberately absent from
-every companion endpoint.
+Legacy assignment routes are unavailable; library membership replaces that step.
+`GET /catalog/search` requires sign-in and returns eligible public Play apps for
+every account. All phone operations are restricted to the account's own phones;
+another account's device identifiers are treated as not found. The former admin
+and bootstrap endpoints are unavailable. APK URLs and bytes are deliberately
+absent from every companion endpoint.
 
 ## Verification
 
@@ -334,8 +326,8 @@ pnpm build
 ```
 
 Tests cover passwords, cookie/session lifecycle, origin checks, rate limits,
-one-time ownership migration, cross-account denial, curated app permissions,
-pairing, exact-byte Ed25519 signatures, device-bound jobs, and signer review.
+legacy migration compatibility, cross-account denial, library admission policy,
+pairing, exact-byte Ed25519 signatures, and device-bound library jobs.
 
 For the browser UI, `python3 tests/ui-smoke.py` checks the already-running
 companion with one headless Chromium instance (requires Python Playwright).

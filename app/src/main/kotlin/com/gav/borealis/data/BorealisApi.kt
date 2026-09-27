@@ -95,6 +95,21 @@ class BorealisApi(
         decode(response.body, "job report")
     }
 
+    suspend fun requestLibraryJob(
+        deviceBearer: String,
+        packageName: String,
+    ): Result<SignedJobEnvelope> = apiRunCatching {
+        require(validDeviceBearer(deviceBearer)) { "Stored device credential is invalid." }
+        require(validPackageName(packageName)) { "Invalid app package name." }
+        val response = transport.post(
+            url = "$baseUrl/api/borealis/v1/device/library/$packageName/job",
+            headers = bearerHeaders(deviceBearer),
+            body = "{}",
+        )
+        response.requireSuccess("Library install request")
+        decode<LibraryJobResponse>(response.body, "library install request").job
+    }
+
     override fun close() {
         transport.close()
     }
@@ -199,6 +214,9 @@ fun validDeviceBearer(value: String): Boolean {
 
 private fun validJobId(value: String): Boolean =
     value.length in 16..128 && value.all { it.isLetterOrDigit() || it == '-' || it == '_' }
+
+internal fun validPackageName(value: String): Boolean =
+    Regex("^[a-zA-Z][a-zA-Z0-9_]*(\\.[a-zA-Z][a-zA-Z0-9_]*)+$").matches(value)
 
 private fun bearerHeaders(value: String): Map<String, String> =
     mapOf(HttpHeaders.Authorization to "Bearer $value")

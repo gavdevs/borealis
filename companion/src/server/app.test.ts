@@ -1,542 +1,286 @@
 import { createHash, createPublicKey, verify } from 'node:crypto'
 import { createClient } from '@libsql/client'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { BorealisConfig } from './config.js'
 import { BorealisDatabase } from './db.js'
 import { createBorealisApp } from './app.js'
-import type { PlaySearchProvider } from './play-search.js'
+import type { PlayAppDetails, PlaySearchProvider } from './play-search.js'
+import type { InstallJobPayload, SignedJobEnvelope } from '../shared/api.js'
 
 const API = '/api/borealis/v1'
-const ADMIN_TOKEN = 'test-admin-token-that-is-long-enough'
-const CURATOR_PASSWORD = 'curator password long enough'
-const MEMBER_PASSWORD = 'member password long enough'
-const DEVICE_BEARER = deviceBearer(7)
-const DEVICE_DIGEST = digest(DEVICE_BEARER)
-const SIGNER = 'a'.repeat(64)
-
+const PASSWORD = 'fixture account passphrase'
+const PACKAGE = 'com.example.bank'
+const NOW = '2026-09-25T12:00:00.000Z'
 const config: BorealisConfig = {
-  adminToken: ADMIN_TOKEN,
-  databasePath: ':memory:',
-  publicBaseUrl: 'https://borealis.test',
-  port: 8787,
-  pairingTtlMinutes: 10,
-  jobTtlSeconds: 900,
-  playLanguage: 'en',
-  playCountry: 'us',
+  adminToken: 'test-admin-token-that-is-long-enough', databasePath: ':memory:',
+  publicBaseUrl: 'https://borealis.test', port: 8787, pairingTtlMinutes: 10,
+  jobTtlSeconds: 900, playLanguage: 'en', playCountry: 'us',
 }
-
-const playSearch: PlaySearchProvider = {
-  async search(query, limit) {
-    return [{
-      packageName: 'com.example.bank',
-      displayName: `Result for ${query}`,
-      publisher: 'Example Financial',
-      detailUrl: 'https://play.google.com/store/apps/details?id=com.example.bank',
-    }].slice(0, limit)
-  },
+const metadata: PlayAppDetails = {
+  packageName: PACKAGE, displayName: 'Example Bank', publisher: 'Example Financial',
+  detailUrl: `https://play.google.com/store/apps/details?id=${PACKAGE}`,
+  category: 'FINANCE', description: 'Card controls and email notifications. Open browser help if needed.',
 }
-
 type App = Awaited<ReturnType<typeof createBorealisApp>>
-type PairingFixture = {
-  pairingId: string
-  userCode: string
-  pollSecret: string
-}
+type Phone = { deviceId: string; signingPublicKey: string; bearer: string }
 
-describe('Borealis API', () => {
+describe('Borealis personal-library API', () => {
   let database: BorealisDatabase
   let app: App
-  let curatorCookie: string
+  let alice: string
+  let playSearch: PlaySearchProvider
+  let phoneCount: number
 
   beforeEach(async () => {
     database = new BorealisDatabase(createClient({ url: ':memory:' }))
     await database.migrate()
-    app = await createBorealisApp({
-      config,
-      database,
-      playSearch,
-      clock: () => new Date('2026-09-25T12:00:00.000Z'),
-      clientAddress: () => 'test-peer',
-    })
-    curatorCookie = await bootstrapCurator(app)
+    playSearch = {
+      search: vi.fn(async () => [metadata]),
+      details: vi.fn(async (packageName) => packageName === PACKAGE ? metadata : null),
+    }
+    app = await createBorealisApp({ config, database, playSearch, clock: () => new Date(NOW), clientAddress: () => 'fixture-peer' })
+    phoneCount = 0
+    alice = await signup('alice')
   })
-
   afterEach(() => database.close())
 
-  it('keeps health public but requires a session for catalog and rejects the legacy admin bearer', async () => {
-    const health = await app.request(`${API}/health`)
-    expect(health.status).toBe(200)
-    expect(await health.json()).toMatchObject({ status: 'ok', service: 'borealis' })
-
-    const anonymousSearch = await app.request(`${API}/catalog/search?q=bank&limit=4`)
-    expect(anonymousSearch.status).toBe(401)
-
-    const search = await app.request(`${API}/catalog/search?q=bank&limit=4`, {
-      headers: sessionHeaders(curatorCookie),
-    })
-    expect(search.status).toBe(200)
-    expect(await search.json()).toMatchObject({
-      query: 'bank',
-      results: [{ packageName: 'com.example.bank', displayName: 'Result for bank' }],
-    })
-
-    const legacyAdmin = await app.request(`${API}/admin/allowlist`, {
-      headers: { Authorization: `Bearer ${ADMIN_TOKEN}` },
-    })
-    expect(legacyAdmin.status).toBe(401)
-  })
-
-  it('limits catalog mutation to curators and gives members only filtered curated results', async () => {
-    await createAllowlistItem(app, curatorCookie, {
-      packageName: 'com.example.bank',
-      displayName: 'Example Bank',
-      publisher: 'Example Financial',
-      reason: 'Card controls required away from home.',
-    })
-    await createAllowlistItem(app, curatorCookie, {
-      packageName: 'org.example.transit',
-      displayName: 'City Transit',
-      publisher: 'Transit Authority',
-      reason: 'Tickets and live service alerts.',
-    })
-    const memberCookie = await signUp(app, 'alice')
-
-    const memberSearch = await app.request(`${API}/catalog/search?q=financial&limit=10`, {
-      headers: sessionHeaders(memberCookie),
-    })
-    expect(memberSearch.status).toBe(200)
-    expect(await memberSearch.json()).toMatchObject({
-      results: [{
-        packageName: 'com.example.bank',
-        displayName: 'Example Bank',
-        publisher: 'Example Financial',
-      }],
-    })
-
-    const memberMutation = await app.request(`${API}/admin/allowlist`, {
-      method: 'POST',
-      headers: mutationHeaders(memberCookie),
-      body: JSON.stringify({
-        packageName: 'com.example.unapproved',
-        displayName: 'Unapproved',
-        publisher: 'Unknown',
-        reason: 'This must not be accepted.',
-      }),
-    })
-    expect(memberMutation.status).toBe(403)
-
-    const missingGuard = await app.request(`${API}/admin/allowlist`, {
-      method: 'POST',
+  function request(path: string, session?: string, body?: unknown, method?: string) {
+    return app.request(`${API}${path}`, {
+      method: method ?? (body === undefined ? 'GET' : 'POST'),
       headers: {
-        Cookie: curatorCookie,
-        'Content-Type': 'application/json',
+        ...(session ? { Cookie: session } : {}), 'Content-Type': 'application/json',
+        'X-Borealis-Request': '1', Origin: config.publicBaseUrl,
       },
-      body: JSON.stringify({
-        packageName: 'com.example.csrf',
-        displayName: 'CSRF',
-        publisher: 'Unknown',
-        reason: 'This request is missing the browser guard.',
-      }),
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     })
-    expect(missingGuard.status).toBe(403)
-  })
-
-  it('awaits allowlist writes and returns resolved records from read and delete routes', async () => {
-    const item = {
-      packageName: 'com.example.bank',
-      displayName: 'Example Bank',
-      publisher: 'Example Financial',
-      reason: 'Card controls required away from home.',
-    }
-    await createAllowlistItem(app, curatorCookie, item)
-
-    const listed = await app.request(`${API}/admin/allowlist`, { headers: sessionHeaders(curatorCookie) })
-    expect(await listed.json()).toMatchObject({ items: [item] })
-    const found = await app.request(`${API}/admin/allowlist/${item.packageName}`, {
-      headers: sessionHeaders(curatorCookie),
+  }
+  async function signup(username: string) {
+    const response = await request('/auth/signup', undefined, { username, password: PASSWORD })
+    expect(response.status).toBe(201)
+    expect(await response.json()).toMatchObject({ account: { role: 'member' } })
+    return response.headers.getSetCookie().find((cookie) => cookie.startsWith('__Host-borealis_session='))!.split(';')[0]!
+  }
+  async function pair(session = alice): Promise<Phone> {
+    const bearer = `brl_device_${Buffer.alloc(32, ++phoneCount).toString('base64url')}`
+    const created = await request('/pairings', undefined, {
+      deviceLabel: 'Light Phone', deviceBearerDigest: createHash('sha256').update(bearer).digest('hex'),
     })
-    expect(await found.json()).toMatchObject({ item })
-
-    const duplicate = await app.request(`${API}/admin/allowlist`, {
-      method: 'POST',
-      headers: mutationHeaders(curatorCookie),
-      body: JSON.stringify(item),
-    })
-    expect(duplicate.status).toBe(409)
-
-    const deleted = await app.request(`${API}/admin/allowlist/${item.packageName}`, {
-      method: 'DELETE',
-      headers: mutationHeaders(curatorCookie),
-      body: JSON.stringify({}),
-    })
-    expect(deleted.status).toBe(200)
-    const missing = await app.request(`${API}/admin/allowlist/${item.packageName}`, {
-      headers: sessionHeaders(curatorCookie),
-    })
-    expect(missing.status).toBe(404)
-    const alreadyDeleted = await app.request(`${API}/admin/allowlist/${item.packageName}`, {
-      method: 'DELETE',
-      headers: mutationHeaders(curatorCookie),
-      body: JSON.stringify({}),
-    })
-    expect(alreadyDeleted.status).toBe(404)
-  })
-
-  it('rejects an unknown device instead of treating an asynchronous auth lookup as a device', async () => {
-    const response = await app.request(`${API}/device/sync`, { headers: phoneHeaders(DEVICE_BEARER) })
-    expect(response.status).toBe(401)
-    expect(await response.json()).toEqual({ error: 'This device is not active.' })
-  })
-
-  it('pairs an owned device, saves the app before assignment, and signs exact job bytes', async () => {
-    const pairing = await createPhonePairing(app, 'Gav’s Light Phone', DEVICE_DIGEST)
-    const preview = await app.request(`${API}/me/pairings/preview`, {
-      method: 'POST',
-      headers: mutationHeaders(curatorCookie),
-      body: JSON.stringify({ userCode: pairing.userCode }),
-    })
-    expect(preview.status).toBe(200)
-    expect(await preview.json()).toMatchObject({ pairing: { deviceLabel: 'Gav’s Light Phone', state: 'pending' } })
-
-    const approvalResponse = await approvePairing(app, curatorCookie, pairing.userCode)
-    expect(approvalResponse.status).toBe(200)
-    const approval = await approvalResponse.json() as { device: { id: string } }
-    const approvedPairings = await app.request(`${API}/me/pairings`, { headers: sessionHeaders(curatorCookie) })
-    expect(await approvedPairings.json()).toMatchObject({ pairings: [{ id: pairing.pairingId }] })
-
-    const activationResponse = await app.request(`${API}/pairings/${pairing.pairingId}/activate`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${pairing.pollSecret}` },
-    })
-    expect(activationResponse.status).toBe(200)
-    const activation = await activationResponse.json() as {
-      deviceId: string
-      keyId: string
-      signingPublicKey: string
-    }
-    expect(activation.deviceId).toBe(approval.device.id)
-
-    await createAllowlistItem(app, curatorCookie, {
-      packageName: 'com.example.bank',
-      displayName: 'Example Bank',
-      publisher: 'Example Financial',
-      reason: 'Card controls required away from home.',
-    })
-    const saved = await app.request(`${API}/me/apps`, {
-      method: 'POST',
-      headers: mutationHeaders(curatorCookie),
-      body: JSON.stringify({ packageName: 'com.example.bank' }),
-    })
-    expect(saved.status).toBe(201)
-
-    const assignResponse = await app.request(`${API}/me/devices/${activation.deviceId}/assignments`, {
-      method: 'POST',
-      headers: mutationHeaders(curatorCookie),
-      body: JSON.stringify({ packageName: 'com.example.bank' }),
-    })
-    expect(assignResponse.status).toBe(201)
-
-    const syncResponse = await app.request(`${API}/device/sync`, { headers: phoneHeaders(DEVICE_BEARER) })
-    expect(syncResponse.status).toBe(200)
-    const sync = await syncResponse.json() as {
-      jobs: Array<{ keyId: string; payload: string; signature: string }>
-    }
-    expect(sync.jobs).toHaveLength(1)
-    const envelope = sync.jobs[0]!
-    const publicKey = createPublicKey({
-      key: Buffer.from(activation.signingPublicKey, 'base64url'),
-      type: 'spki',
-      format: 'der',
-    })
-    expect(verify(null, Buffer.from(envelope.payload, 'utf8'), publicKey, Buffer.from(envelope.signature, 'base64url'))).toBe(true)
-    const payload = JSON.parse(envelope.payload) as { jobId: string; acceptedSignerSha256: string[]; deviceId: string }
-    expect(envelope.keyId).toBe(activation.keyId)
-    expect(payload).toMatchObject({
-      schemaVersion: 1,
-      deviceId: activation.deviceId,
-      action: 'install_or_update',
-      packageName: 'com.example.bank',
-      acceptedSignerSha256: [],
-    })
-
-    const prematureSuccess = await app.request(`${API}/device/jobs/${payload.jobId}/report`, {
-      method: 'POST',
-      headers: phoneJsonHeaders(DEVICE_BEARER),
-      body: JSON.stringify({ status: 'succeeded', installedVersionCode: 42 }),
-    })
-    expect(prematureSuccess.status).toBe(409)
-
-    const review = await app.request(`${API}/device/jobs/${payload.jobId}/report`, {
-      method: 'POST',
-      headers: phoneJsonHeaders(DEVICE_BEARER),
-      body: JSON.stringify({ status: 'review_required', observedSignerSha256: [SIGNER] }),
-    })
-    expect(review.status).toBe(200)
-
-    const jobsResponse = await app.request(`${API}/me/devices/${activation.deviceId}/jobs`, {
-      headers: sessionHeaders(curatorCookie),
-    })
-    expect(await jobsResponse.json()).toMatchObject({
-      jobs: [{ status: 'review_required', observedSignerSha256: [SIGNER] }],
-    })
-
-    const pinResponse = await app.request(`${API}/admin/allowlist/com.example.bank`, {
-      method: 'PUT',
-      headers: mutationHeaders(curatorCookie),
-      body: JSON.stringify({
-        displayName: 'Example Bank',
-        publisher: 'Example Financial',
-        reason: 'Card controls required away from home.',
-        signerSha256: SIGNER,
-      }),
-    })
-    expect(pinResponse.status).toBe(200)
-
-    const requeueResponse = await app.request(`${API}/me/devices/${activation.deviceId}/jobs`, {
-      method: 'POST',
-      headers: mutationHeaders(curatorCookie),
-      body: JSON.stringify({ packageName: 'com.example.bank' }),
-    })
-    expect(requeueResponse.status).toBe(201)
-
-    const pinnedSyncResponse = await app.request(`${API}/device/sync`, { headers: phoneHeaders(DEVICE_BEARER) })
-    const pinnedSync = await pinnedSyncResponse.json() as { jobs: Array<{ payload: string }> }
-    const pinnedPayload = JSON.parse(pinnedSync.jobs[0]!.payload) as { acceptedSignerSha256: string[] }
-    expect(pinnedPayload.acceptedSignerSha256).toEqual([SIGNER])
-
-    const devicesResponse = await app.request(`${API}/me/devices`, { headers: sessionHeaders(curatorCookie) })
-    expect(await devicesResponse.json()).toMatchObject({ devices: [{ id: activation.deviceId }] })
-    const assignmentsResponse = await app.request(`${API}/me/devices/${activation.deviceId}/assignments`, {
-      headers: sessionHeaders(curatorCookie),
-    })
-    expect(await assignmentsResponse.json()).toMatchObject({ assignments: [{ packageName: 'com.example.bank' }] })
-
-    const revokeResponse = await app.request(`${API}/me/devices/${activation.deviceId}`, {
-      method: 'DELETE',
-      headers: mutationHeaders(curatorCookie),
-      body: JSON.stringify({}),
-    })
-    expect(revokeResponse.status).toBe(200)
-    const revokedSyncResponse = await app.request(`${API}/device/sync`, { headers: phoneHeaders(DEVICE_BEARER) })
-    expect(revokedSyncResponse.status).toBe(401)
-  })
-
-  it('enforces account ownership across apps, pairings, devices, assignments, and jobs', async () => {
-    const aliceCookie = await signUp(app, 'alice')
-    const bobCookie = await signUp(app, 'bob')
-    await createAllowlistItem(app, curatorCookie, {
-      packageName: 'com.example.bank',
-      displayName: 'Example Bank',
-      publisher: 'Example Financial',
-      reason: 'Card controls required away from home.',
-    })
-    const pairing = await createPhonePairing(app, 'Alice Phone', DEVICE_DIGEST)
-
-    const alicePending = await app.request(`${API}/me/pairings`, { headers: sessionHeaders(aliceCookie) })
-    const bobPending = await app.request(`${API}/me/pairings`, { headers: sessionHeaders(bobCookie) })
-    expect(await alicePending.json()).toEqual({ pairings: [] })
-    expect(await bobPending.json()).toEqual({ pairings: [] })
-
-    const approval = await approvePairing(app, aliceCookie, pairing.userCode)
-    expect(approval.status).toBe(200)
-    const approved = await approval.json() as { device: { id: string } }
+    expect(created.status).toBe(201)
+    const pairing = await created.json() as { pairingId: string; userCode: string; pollSecret: string }
+    const approved = await request('/me/pairings/approve', session, { userCode: pairing.userCode })
+    expect(approved.status).toBe(200)
     const activated = await app.request(`${API}/pairings/${pairing.pairingId}/activate`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${pairing.pollSecret}` },
+      method: 'POST', headers: { Authorization: `Bearer ${pairing.pollSecret}` },
     })
     expect(activated.status).toBe(200)
+    return { ...await activated.json() as { deviceId: string; signingPublicKey: string }, bearer }
+  }
+  function phoneRequest(phone: Phone, path: string, body?: unknown) {
+    return app.request(`${API}${path}`, {
+      method: body === undefined ? 'GET' : 'POST',
+      headers: { Authorization: `Bearer ${phone.bearer}`, 'Content-Type': 'application/json' },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    })
+  }
+  async function add(session = alice) {
+    const response = await request('/me/apps', session, { packageName: PACKAGE })
+    expect(response.status).toBe(201)
+  }
+  async function job(phone: Phone) {
+    const response = await phoneRequest(phone, `/device/library/${PACKAGE}/job`, {})
+    expect(response.status).toBe(200)
+    const { job: envelope } = await response.json() as { job: SignedJobEnvelope }
+    const publicKey = createPublicKey({ key: Buffer.from(phone.signingPublicKey, 'base64url'), format: 'der', type: 'spki' })
+    expect(verify(null, Buffer.from(envelope.payload), publicKey, Buffer.from(envelope.signature, 'base64url'))).toBe(true)
+    return JSON.parse(envelope.payload) as InstallJobPayload
+  }
 
-    const save = await app.request(`${API}/me/apps`, {
-      method: 'POST',
-      headers: mutationHeaders(aliceCookie),
-      body: JSON.stringify({ packageName: 'com.example.bank' }),
-    })
-    expect(save.status).toBe(201)
-    const assigned = await app.request(`${API}/me/devices/${approved.device.id}/assignments`, {
-      method: 'POST',
-      headers: mutationHeaders(aliceCookie),
-      body: JSON.stringify({ packageName: 'com.example.bank' }),
-    })
-    expect(assigned.status).toBe(201)
-
-    const bobApps = await app.request(`${API}/me/apps`, { headers: sessionHeaders(bobCookie) })
-    expect(await bobApps.json()).toEqual({ items: [] })
-    const bobDeleteApp = await app.request(`${API}/me/apps/com.example.bank`, {
-      method: 'DELETE',
-      headers: mutationHeaders(bobCookie),
-      body: JSON.stringify({}),
-    })
-    expect(bobDeleteApp.status).toBe(404)
-
-    const bobPairings = await app.request(`${API}/me/pairings`, { headers: sessionHeaders(bobCookie) })
-    expect(await bobPairings.json()).toEqual({ pairings: [] })
-    const bobUsedPreview = await app.request(`${API}/me/pairings/preview`, {
-      method: 'POST',
-      headers: mutationHeaders(bobCookie),
-      body: JSON.stringify({ userCode: pairing.userCode }),
-    })
-    expect(bobUsedPreview.status).toBe(404)
-
-    const bobDevices = await app.request(`${API}/me/devices`, { headers: sessionHeaders(bobCookie) })
-    expect(await bobDevices.json()).toEqual({ devices: [] })
-    const crossGetAssignments = await app.request(`${API}/me/devices/${approved.device.id}/assignments`, {
-      headers: sessionHeaders(bobCookie),
-    })
-    expect(crossGetAssignments.status).toBe(404)
-    const crossAssign = await app.request(`${API}/me/devices/${approved.device.id}/assignments`, {
-      method: 'POST',
-      headers: mutationHeaders(bobCookie),
-      body: JSON.stringify({ packageName: 'com.example.bank' }),
-    })
-    expect(crossAssign.status).toBe(404)
-    const crossRemove = await app.request(`${API}/me/devices/${approved.device.id}/assignments/com.example.bank`, {
-      method: 'DELETE',
-      headers: mutationHeaders(bobCookie),
-      body: JSON.stringify({}),
-    })
-    expect(crossRemove.status).toBe(404)
-    const crossGetJobs = await app.request(`${API}/me/devices/${approved.device.id}/jobs`, {
-      headers: sessionHeaders(bobCookie),
-    })
-    expect(crossGetJobs.status).toBe(404)
-    const crossQueue = await app.request(`${API}/me/devices/${approved.device.id}/jobs`, {
-      method: 'POST',
-      headers: mutationHeaders(bobCookie),
-      body: JSON.stringify({ packageName: 'com.example.bank' }),
-    })
-    expect(crossQueue.status).toBe(404)
-    const crossRevoke = await app.request(`${API}/me/devices/${approved.device.id}`, {
-      method: 'DELETE',
-      headers: mutationHeaders(bobCookie),
-      body: JSON.stringify({}),
-    })
-    expect(crossRevoke.status).toBe(404)
-
-    const aliceDevices = await app.request(`${API}/me/devices`, { headers: sessionHeaders(aliceCookie) })
-    expect(await aliceDevices.json()).toMatchObject({ devices: [{ id: approved.device.id }] })
-    const aliceApps = await app.request(`${API}/me/apps`, { headers: sessionHeaders(aliceCookie) })
-    expect(await aliceApps.json()).toMatchObject({ items: [{ packageName: 'com.example.bank' }] })
+  it('keeps health public, requires search authentication, and removes curator/bootstrap endpoints', async () => {
+    expect((await request('/health')).status).toBe(200)
+    expect((await request('/catalog/search?q=bank')).status).toBe(401)
+    expect((await request('/admin/allowlist', alice)).status).toBe(404)
+    expect((await request('/admin/allowlist', alice, metadata)).status).toBe(404)
+    expect((await request('/auth/bootstrap', alice, { username: 'owner', password: PASSWORD, adminToken: config.adminToken })).status).toBe(404)
+    expect(await (await request('/auth/session', alice)).json()).not.toHaveProperty('bootstrapAvailable')
   })
 
-  it('lets exactly one account claim a pairing when approvals race', async () => {
-    const aliceCookie = await signUp(app, 'alice')
-    const bobCookie = await signUp(app, 'bob')
-    const pairing = await createPhonePairing(app, 'Race Phone', digest(deviceBearer(9)))
+  it('searches canonical policy-eligible Play apps for ordinary accounts and does not use an approval catalog', async () => {
+    expect(await database.listAllowlist()).toEqual([])
+    const response = await request('/catalog/search?q=bank', alice)
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ results: [{ packageName: PACKAGE, displayName: metadata.displayName }] })
+    expect(playSearch.search).toHaveBeenCalledWith('bank', 12)
+    expect(playSearch.details).toHaveBeenCalledWith(PACKAGE)
+  })
 
-    const [aliceApproval, bobApproval] = await Promise.all([
-      approvePairing(app, aliceCookie, pairing.userCode),
-      approvePairing(app, bobCookie, pairing.userCode),
+  it('rejects client-supplied metadata and uses official details for additions', async () => {
+    expect((await request('/me/apps', alice, { packageName: PACKAGE, category: 'FINANCE' })).status).toBe(400)
+    expect((await request('/me/apps', alice, { packageName: 'com.example.missing' })).status).toBe(404)
+    await add()
+    expect(await (await request('/me/apps', alice)).json()).toMatchObject({ items: [{ displayName: metadata.displayName, publisher: metadata.publisher }] })
+    await add()
+    expect((await (await request('/me/apps', alice)).json() as { items: unknown[] }).items).toHaveLength(1)
+  })
+
+  it('makes canonical Lifestyle tools such as Hatch Sleep available to any account without a package approval', async () => {
+    const hatch = { ...metadata, packageName: 'com.hatchbaby.rest', displayName: 'Hatch Sleep', category: 'LIFESTYLE' }
+    vi.mocked(playSearch.search).mockResolvedValue([hatch])
+    vi.mocked(playSearch.details).mockResolvedValue(hatch)
+    const bob = await signup('bob')
+    for (const session of [alice, bob]) {
+      expect(await (await request('/catalog/search?q=hatch', session)).json()).toMatchObject({ results: [{ packageName: hatch.packageName }] })
+      expect((await request('/me/apps', session, { packageName: hatch.packageName })).status).toBe(201)
+      expect(await (await request('/me/apps', session)).json()).toMatchObject({ items: [{ packageName: hatch.packageName }] })
+    }
+  })
+
+  it.each([
+    ['SOCIAL', 'Social Feed', 'com.example.social'], ['GAME_PUZZLE', 'Puzzle', 'com.example.game'],
+    ['ENTERTAINMENT', 'Videos', 'com.example.video'], ['PRODUCTIVITY', 'Gmail', 'com.google.android.gm'],
+    ['PRODUCTIVITY', 'Microsoft Outlook', 'com.microsoft.office.outlook'], ['TOOLS', 'Quiet Browser', 'com.example.browser'],
+    ['UNKNOWN', 'Mystery App', 'com.example.mystery'],
+  ])('excludes %s / %s from search and direct package additions', async (category, displayName, packageName) => {
+    const blocked = { ...metadata, category, displayName, packageName }
+    vi.mocked(playSearch.search).mockResolvedValue([blocked])
+    vi.mocked(playSearch.details).mockResolvedValue(blocked)
+    expect(await (await request('/catalog/search?q=app', alice)).json()).toMatchObject({ results: [] })
+    const response = await request('/me/apps', alice, { packageName })
+    expect(response.status).toBe(403)
+    expect(await response.json()).toHaveProperty('error', expect.stringMatching(/not available/))
+    expect(await database.listAllowlist()).toEqual([])
+  })
+
+  it('fails closed with a helpful error when metadata cannot be verified', async () => {
+    vi.mocked(playSearch.details).mockRejectedValue(new Error('private upstream detail'))
+    const response = await request('/me/apps', alice, { packageName: PACKAGE })
+    expect(response.status).toBe(502)
+    expect(await response.text()).not.toContain('private upstream detail')
+    const search = await request('/catalog/search?q=bank', alice)
+    expect(search.status).toBe(502)
+    expect(await search.text()).not.toContain('private upstream detail')
+  })
+
+  it('skips an unavailable search candidate without losing other eligible results', async () => {
+    vi.mocked(playSearch.search).mockResolvedValue([{ ...metadata, packageName: 'com.example.missing' }, metadata])
+    vi.mocked(playSearch.details).mockImplementation(async (packageName) => {
+      if (packageName !== PACKAGE) throw new Error('unavailable')
+      return metadata
+    })
+    expect(await (await request('/catalog/search?q=bank', alice)).json()).toMatchObject({ results: [{ packageName: PACKAGE }] })
+  })
+
+  it('caps detail work at eight candidates and excludes obvious browser identities before fetching details', async () => {
+    const candidates = Array.from({ length: 20 }, (_, index) => ({ ...metadata, packageName: `com.example.bank${index}` }))
+    vi.mocked(playSearch.search).mockResolvedValue([{ ...metadata, packageName: 'com.android.chrome', displayName: 'Chrome' }, ...candidates])
+    vi.mocked(playSearch.details).mockImplementation(async (packageName) => ({ ...metadata, packageName }))
+    const result = await request('/catalog/search?q=bank&limit=20', alice)
+    expect(result.status).toBe(200)
+    expect(playSearch.details).toHaveBeenCalledTimes(8)
+    expect(playSearch.details).not.toHaveBeenCalledWith('com.android.chrome')
+    expect((await result.json() as { results: unknown[] }).results).toHaveLength(8)
+  })
+
+  it('makes additions available to every owned phone, including phones paired later, without assignments or jobs', async () => {
+    const first = await pair()
+    await add()
+    const second = await pair()
+    for (const phone of [first, second]) {
+      const sync = await phoneRequest(phone, '/device/sync')
+      expect(await sync.json()).toMatchObject({ library: [{ packageName: PACKAGE, displayName: metadata.displayName }], jobs: [] })
+      expect(await database.listJobs(phone.deviceId)).toEqual([])
+      expect((await request(`/me/devices/${phone.deviceId}/assignments`, alice)).status).toBe(404)
+    }
+  })
+
+  it('signs first-install jobs without publisher review, reuses active work, and preserves library after success', async () => {
+    await add()
+    const phone = await pair()
+    const payloads = await Promise.all([job(phone), job(phone)])
+    expect(payloads[0]!.jobId).toBe(payloads[1]!.jobId)
+    const payload = payloads[0]!
+    expect(payload).toMatchObject({ deviceId: phone.deviceId, packageName: PACKAGE, acceptedSignerSha256: [], schemaVersion: 1 })
+    const report = await phoneRequest(phone, `/device/jobs/${payload.jobId}/report`, {
+      status: 'succeeded', installedVersionCode: 42, observedSignerSha256: ['a'.repeat(64)],
+    })
+    expect(report.status).toBe(200)
+    for (let i = 0; i < 2; i++) {
+      expect(await (await phoneRequest(phone, '/device/sync')).json()).toMatchObject({ library: [{ packageName: PACKAGE }], jobs: [] })
+    }
+    expect(await database.listJobs(phone.deviceId)).toHaveLength(1)
+    expect((await job(phone)).jobId).not.toBe(payload.jobId)
+    expect(await database.listJobs(phone.deviceId)).toHaveLength(2)
+  })
+
+  it('preserves historical publisher-review failures while letting the phone request a fresh install', async () => {
+    await add()
+    const phone = await pair()
+    const old = await job(phone)
+    expect((await phoneRequest(phone, `/device/jobs/${old.jobId}/report`, {
+      status: 'review_required', observedSignerSha256: ['a'.repeat(64)], message: 'Legacy publisher review.',
+    })).status).toBe(200)
+    const fresh = await job(phone)
+    expect(fresh.jobId).not.toBe(old.jobId)
+    expect(fresh.acceptedSignerSha256).toEqual([])
+    const jobs = await database.listJobs(phone.deviceId)
+    expect(jobs).toHaveLength(2)
+    expect(jobs.find((item) => item.id === old.jobId)?.status).toBe('review_required')
+  })
+
+  it('enforces account and device isolation for libraries, jobs, reports, and phone management', async () => {
+    const bob = await signup('bob')
+    const alicePhone = await pair()
+    const bobPhone = await pair(bob)
+    await add()
+    expect(await (await request('/me/apps', bob)).json()).toEqual({ items: [] })
+    expect(await (await phoneRequest(bobPhone, '/device/sync')).json()).toMatchObject({ library: [], jobs: [] })
+    expect((await phoneRequest(bobPhone, `/device/library/${PACKAGE}/job`, {})).status).toBe(404)
+    const aliceJob = await job(alicePhone)
+    expect((await phoneRequest(bobPhone, `/device/jobs/${aliceJob.jobId}/report`, { status: 'failed' })).status).toBe(404)
+    expect((await request(`/me/devices/${alicePhone.deviceId}/jobs`, bob)).status).toBe(404)
+    expect((await request(`/me/devices/${alicePhone.deviceId}/jobs`, bob, { packageName: PACKAGE })).status).toBe(404)
+    expect((await request(`/me/devices/${alicePhone.deviceId}`, bob, undefined, 'DELETE')).status).toBe(404)
+    expect((await request(`/me/apps/${PACKAGE}`, bob, undefined, 'DELETE')).status).toBe(404)
+  })
+
+  it('removes library permission only from that account and cancels pending jobs without deleting history', async () => {
+    const bob = await signup('bob')
+    await add()
+    await add(bob)
+    const alicePhone = await pair()
+    const bobPhone = await pair(bob)
+    const pending = await job(alicePhone)
+    const beforeRemoval = await database.getDevice(alicePhone.deviceId)
+    expect((await request(`/me/apps/${PACKAGE}`, alice, undefined, 'DELETE')).status).toBe(200)
+    expect(await (await phoneRequest(alicePhone, '/device/sync')).json()).toMatchObject({ library: [], jobs: [] })
+    expect((await phoneRequest(alicePhone, `/device/library/${PACKAGE}/job`, {})).status).toBe(404)
+    expect(await database.getJob(pending.jobId)).toMatchObject({ status: 'cancelled' })
+    expect((await database.getDevice(alicePhone.deviceId))!.revision).toBe(beforeRemoval!.revision + 1)
+    expect(await (await phoneRequest(bobPhone, '/device/sync')).json()).toMatchObject({ library: [{ packageName: PACKAGE }] })
+  })
+
+  it('rejects revoked/unknown credentials and browser mutations without their CSRF guard', async () => {
+    const phone = await pair()
+    await add()
+    expect((await app.request(`${API}/me/apps`, { method: 'POST', headers: { Cookie: alice, 'Content-Type': 'application/json' }, body: JSON.stringify({ packageName: PACKAGE }) })).status).toBe(403)
+    expect((await request(`/me/devices/${phone.deviceId}`, alice, undefined, 'DELETE')).status).toBe(200)
+    expect((await phoneRequest(phone, '/device/sync')).status).toBe(401)
+    expect((await phoneRequest(phone, `/device/library/${PACKAGE}/job`, {})).status).toBe(401)
+  })
+
+  it('lets exactly one account claim a phone when pairing approvals race', async () => {
+    const bob = await signup('bob')
+    const created = await request('/pairings', undefined, {
+      deviceLabel: 'Shared pairing screen', deviceBearerDigest: 'd'.repeat(64),
+    })
+    const pairing = await created.json() as { userCode: string }
+    const responses = await Promise.all([
+      request('/me/pairings/approve', alice, { userCode: pairing.userCode }),
+      request('/me/pairings/approve', bob, { userCode: pairing.userCode }),
     ])
-    expect([aliceApproval.status, bobApproval.status].sort()).toEqual([200, 404])
-
-    const winnerCookie = aliceApproval.status === 200 ? aliceCookie : bobCookie
-    const loserCookie = aliceApproval.status === 200 ? bobCookie : aliceCookie
-    const winnerPairings = await app.request(`${API}/me/pairings`, { headers: sessionHeaders(winnerCookie) })
-    const loserPairings = await app.request(`${API}/me/pairings`, { headers: sessionHeaders(loserCookie) })
-    expect(await winnerPairings.json()).toMatchObject({ pairings: [{ id: pairing.pairingId }] })
-    expect(await loserPairings.json()).toEqual({ pairings: [] })
-
-    const winnerDevices = await app.request(`${API}/me/devices`, { headers: sessionHeaders(winnerCookie) })
-    const loserDevices = await app.request(`${API}/me/devices`, { headers: sessionHeaders(loserCookie) })
-    expect((await winnerDevices.json() as { devices: unknown[] }).devices).toHaveLength(1)
-    expect(await loserDevices.json()).toEqual({ devices: [] })
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 404])
+    const aliceDevices = await (await request('/me/devices', alice)).json() as { devices: unknown[] }
+    const bobDevices = await (await request('/me/devices', bob)).json() as { devices: unknown[] }
+    expect(aliceDevices.devices.length + bobDevices.devices.length).toBe(1)
+    expect(await database.listDevices()).toHaveLength(1)
   })
 })
-
-async function bootstrapCurator(app: App): Promise<string> {
-  const response = await app.request(`${API}/auth/bootstrap`, {
-    method: 'POST',
-    headers: anonymousMutationHeaders(),
-    body: JSON.stringify({
-      adminToken: ADMIN_TOKEN,
-      username: 'curator',
-      password: CURATOR_PASSWORD,
-    }),
-  })
-  expect(response.status).toBe(201)
-  return responseCookie(response)
-}
-
-async function signUp(app: App, username: string): Promise<string> {
-  const response = await app.request(`${API}/auth/signup`, {
-    method: 'POST',
-    headers: anonymousMutationHeaders(),
-    body: JSON.stringify({ username, password: MEMBER_PASSWORD }),
-  })
-  expect(response.status).toBe(201)
-  return responseCookie(response)
-}
-
-async function createAllowlistItem(
-  app: App,
-  cookie: string,
-  item: { packageName: string; displayName: string; publisher: string; reason: string },
-): Promise<void> {
-  const response = await app.request(`${API}/admin/allowlist`, {
-    method: 'POST',
-    headers: mutationHeaders(cookie),
-    body: JSON.stringify(item),
-  })
-  expect(response.status).toBe(201)
-}
-
-async function createPhonePairing(app: App, deviceLabel: string, deviceBearerDigest: string): Promise<PairingFixture> {
-  const response = await app.request(`${API}/pairings`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ deviceLabel, deviceBearerDigest }),
-  })
-  expect(response.status).toBe(201)
-  return await response.json() as PairingFixture
-}
-
-async function approvePairing(app: App, cookie: string, userCode: string): Promise<Response> {
-  return await app.request(`${API}/me/pairings/approve`, {
-    method: 'POST',
-    headers: mutationHeaders(cookie),
-    body: JSON.stringify({ userCode }),
-  })
-}
-
-function responseCookie(response: Response): string {
-  const setCookie = response.headers.get('Set-Cookie')
-  expect(setCookie).toBeTruthy()
-  return setCookie!.split(';', 1)[0]!
-}
-
-function anonymousMutationHeaders(): Record<string, string> {
-  return {
-    'Content-Type': 'application/json',
-    'X-Borealis-Request': '1',
-  }
-}
-
-function mutationHeaders(cookie: string): Record<string, string> {
-  return {
-    ...anonymousMutationHeaders(),
-    Cookie: cookie,
-  }
-}
-
-function sessionHeaders(cookie: string): Record<string, string> {
-  return { Cookie: cookie }
-}
-
-function phoneHeaders(bearer: string): Record<string, string> {
-  return { Authorization: `Bearer ${bearer}` }
-}
-
-function phoneJsonHeaders(bearer: string): Record<string, string> {
-  return {
-    ...phoneHeaders(bearer),
-    'Content-Type': 'application/json',
-  }
-}
-
-function deviceBearer(seed: number): string {
-  return `brl_device_${Buffer.alloc(32, seed).toString('base64url')}`
-}
-
-function digest(value: string): string {
-  return createHash('sha256').update(value).digest('hex')
-}

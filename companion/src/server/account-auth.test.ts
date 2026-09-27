@@ -29,7 +29,7 @@ describe('username and password accounts', () => {
     address = 'fixture-peer'
     database = new BorealisDatabase(createClient({ url: ':memory:' }))
     await database.migrate()
-    app = await createBorealisApp({ config, database, playSearch: { async search() { return [] } }, clock: () => now, clientAddress: () => address })
+    app = await createBorealisApp({ config, database, playSearch: { async search() { return [] }, async details() { return null } }, clock: () => now, clientAddress: () => address })
   })
   afterEach(() => database.close())
   function request(path: string, body?: unknown, session?: string, extra: Record<string, string> = {}) {
@@ -41,7 +41,7 @@ describe('username and password accounts', () => {
   }
 
   it('signs up without email, hashes credentials, uses a secure cookie, and resumes after refresh', async () => {
-    expect(await (await request('/auth/session')).json()).toMatchObject({ account: null, bootstrapAvailable: true })
+    expect(await (await request('/auth/session')).json()).toEqual({ account: null })
     const signup = await request('/auth/signup', { username: '  Quiet_Phone  ', password: PASSWORD })
     expect(signup.status).toBe(201)
     const body = await signup.json() as { account: AccountSummary }
@@ -246,7 +246,7 @@ describe('username and password accounts', () => {
   it('keeps raw Better Auth endpoints private so callers cannot bypass Borealis validation or expose internal aliases', async () => {
     const signup = await request('/auth/signup', { username: 'member', password: PASSWORD })
     const session = cookie(signup)
-    const initial = await (await request('/auth/session', undefined, session)).json() as { account: AccountSummary; bootstrapAvailable: boolean }
+    const initial = await (await request('/auth/session', undefined, session)).json() as { account: AccountSummary }
     for (const path of [
       '/auth/sign-up/email', '/auth/sign-in/email', '/auth/sign-in/username',
       '/auth/request-password-reset', '/auth/reset-password', '/auth/change-email',
@@ -308,7 +308,7 @@ describe('username and password accounts', () => {
     const session = cookie(signin)
     expect(await (await request('/me/devices', undefined, session)).json()).toMatchObject({ devices: [{ id: 'legacy-phone' }] })
     expect(await (await request('/me/apps', undefined, session)).json()).toMatchObject({ items: [{ packageName: 'com.example.bank' }] })
-    expect((await request('/admin/allowlist', undefined, session)).status).toBe(200)
+    expect((await request('/admin/allowlist', undefined, session)).status).toBe(404)
     expect(await database.authenticateDevice('legacy-device-bearer')).toMatchObject({ id: 'legacy-phone' })
     expect(await database.getOrCreateSigningKey(now.toISOString())).toEqual(signingKey)
     expect(await database.isBootstrapAvailable()).toBe(false)
@@ -339,7 +339,7 @@ describe('username and password accounts', () => {
     for (let index = 0; index < 5; index++) {
       expect((await request('/auth/signup', {}, undefined, { 'X-Forwarded-For': `spoof-${index}` })).status).toBe(400)
     }
-    app = await createBorealisApp({ config, database, playSearch: { async search() { return [] } }, clock: () => now, clientAddress: () => address })
+    app = await createBorealisApp({ config, database, playSearch: { async search() { return [] }, async details() { return null } }, clock: () => now, clientAddress: () => address })
     const limited = await request('/auth/signup', { username: 'member', password: PASSWORD })
     expect(limited.status).toBe(429)
     expect(limited.headers.get('retry-after')).toBe('3600')
@@ -350,17 +350,16 @@ describe('username and password accounts', () => {
     expect((await request('/auth/signup', { username: 'second', password: PASSWORD })).status).toBe(201)
   })
 
-  it('does not let public signup claim ownership or grant curator privileges', async () => {
+  it('creates ordinary accounts and has no curator setup or shared catalog administration', async () => {
     const publicSignup = await request('/auth/signup', { username: 'first_member', password: PASSWORD })
     expect(await publicSignup.json()).toMatchObject({ account: { role: 'member' } })
     const badSetup = await request('/auth/bootstrap', { username: 'owner', password: PASSWORD, adminToken: 'wrong' })
-    expect(badSetup.status).toBe(401)
+    expect(badSetup.status).toBe(404)
     const setup = await request('/auth/bootstrap', { username: 'owner', password: PASSWORD, adminToken: config.adminToken })
-    expect(setup.status).toBe(201)
-    expect(await setup.json()).toMatchObject({ account: { role: 'curator' } })
-    expect((await request('/auth/bootstrap', { username: 'owner_again', password: PASSWORD, adminToken: config.adminToken })).status).toBe(409)
-    expect(await (await request('/auth/session')).json()).toMatchObject({ bootstrapAvailable: false })
+    expect(setup.status).toBe(404)
+    expect((await request('/auth/bootstrap', { username: 'owner_again', password: PASSWORD, adminToken: config.adminToken })).status).toBe(404)
+    expect(await (await request('/auth/session')).json()).not.toHaveProperty('bootstrapAvailable')
     const legacy = await app.request(`${API}/admin/allowlist`, { headers: { Authorization: `Bearer ${config.adminToken}` } })
-    expect(legacy.status).toBe(401)
+    expect(legacy.status).toBe(404)
   })
 })

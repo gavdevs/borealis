@@ -133,7 +133,7 @@ try {
   assert.ok(hostedAccounts.length === 2
     && hostedAccounts.some(value => value.id === alice.body.account.id)
     && hostedAccounts.some(value => value.id === bob.body.account.id), 'Service and supplied database fixtures do not match.')
-  await request('/admin/allowlist', 403, { cookie: alice.cookie })
+  await request('/admin/allowlist', 404, { cookie: alice.cookie })
   stage = 'account isolation and owner-bound pairing'
   if (packageName) await request('/me/apps', 201, { method: 'POST', cookie: alice.cookie, body: { packageName } })
   assert.equal((await request('/me/apps', 200, { cookie: bob.cookie })).body.items.length, 0)
@@ -147,12 +147,16 @@ try {
   await request(`/me/devices/${phoneId}/jobs`, 404, { cookie: bob.cookie })
   await request(`/me/devices/${phoneId}`, 404, { method: 'DELETE', cookie: bob.cookie })
   if (packageName) {
-    await request(`/me/devices/${phoneId}/assignments`, 201, { method: 'POST', cookie: alice.cookie, body: { packageName } })
     const synced = (await request('/device/sync', 200, { bearer: deviceBearer })).body
-    assert.equal(synced.jobs.length, 1)
-    const envelope = synced.jobs[0]
+    assert.ok(synced.library.some(app => app.packageName === packageName), 'Pre-pairing library app did not reach phone.')
+    const envelope = (await request(`/device/library/${encodeURIComponent(packageName)}/job`, 200,
+      { method: 'POST', bearer: deviceBearer, body: {} })).body.job
     const key = createPublicKey({ key: Buffer.from(original.public_key_spki), type: 'spki', format: 'der' })
     assert.ok(verify(null, Buffer.from(envelope.payload), key, Buffer.from(envelope.signature, 'base64url')))
+    const payload = JSON.parse(envelope.payload)
+    assert.equal(payload.packageName, packageName)
+    assert.equal(payload.deviceId, phoneId)
+    assert.deepEqual(payload.acceptedSignerSha256, [])
   }
   stage = 'signin, password changes, and session revocation'
   const secondLogin = await request('/auth/signin', 200, { method: 'POST', body: { username: usernames[0].toUpperCase(), password } })
@@ -166,7 +170,7 @@ try {
   assert.equal((await request('/auth/session', 200, { cookie: signedIn.cookie })).body.account, null)
   assert.deepEqual((await client.execute("SELECT value FROM service_metadata WHERE key='bootstrap_claimed'")).rows, bootstrapBefore)
   console.log('Passed: hosted authentication, secure cookies, CSRF, account isolation, pairing, signing identity, password changes, and signout.')
-  console.log(packageName ? 'Passed: signed install-job verification.' : 'Signed install-job verification skipped: the shared catalog is empty.')
+  console.log(packageName ? 'Passed: library sync and signed install-job verification.' : 'Signed install-job verification skipped: no cached package is available.')
 } catch (error) {
   console.error(`Hosted verification failed during ${stage}: ${error instanceof assert.AssertionError ? error.message : 'runtime or network error'}. No credentials were printed.`)
   process.exitCode = 1

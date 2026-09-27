@@ -2,11 +2,11 @@
 
 ## Product boundary
 
-Borealis is a curated remote installer/updater. The browser owns discovery and policy; the phone owns Play authentication, device-specific delivery, verification, and installation. There is deliberately no search box, arbitrary package field, repository URL, or policy override on the phone.
+Borealis is a personal-library installer/updater. The browser owns discovery and automatic app policy; the phone owns Play authentication, device-specific delivery, verification, and installation. There is deliberately no search box, arbitrary package field, repository URL, or policy override on the phone. There is no curator or shared publisher-approval workflow.
 
 ```text
-Companion search -> positive approval -> device assignment
-                                      -> signed short-lived job
+Companion search -> add to personal library -> sync to paired phones
+Phone Install/Update -> authorized signed short-lived job
 Phone verifies job -> direct Play download -> base + splits verification
                                            -> atomic PackageInstaller session
                                            -> result report
@@ -41,22 +41,21 @@ passwords, tokens, URLs, request/response bodies, or exception text. A successfu
 WebView page event means only that a page loaded, not that Play sign-in succeeded.
 
 After pairing, users open `SIGN IN` and enter their Google credentials directly
-on Google's page in Borealis so it can download and update approved apps from
+on Google's page in Borealis so it can download and update library apps from
 Google Play. No separately installed browser is required. Google account challenges
 are handled on the phone; support for every challenge type is not established.
 The companion's separate Borealis username/password login provides account access,
-phone pairing, app selection, and install jobs; catalog approval remains curator-only.
+phone pairing, personal app selection, and install jobs.
 
-The v0.1.3 build is installed on the physical LP3, and the user confirmed that the
-embedded Google page opens. Completed authentication, reusable credential exchange,
-and end-to-end approved-app delivery/install/update remain unverified. Page loading
-alone does not establish that Google accepts the full sign-in flow.
+The alpha.3 build completed authentication, secure storage, and credential reuse
+on the physical LP3. MIKU downloaded and reached the former publisher-review gate.
+Completed third-party installation/update remains unverified.
 
 ## Shared accounts
 
 People sign up and sign in using a username and password, without supplying an
 email. Better Auth 1.7.6 owns password hashing/verification and browser sessions;
-Borealis retains its account-scoped authorization, curated catalog, and durable
+Borealis retains its account-scoped authorization, personal libraries, and durable
 request limits. The library's required email-shaped identifier is the internal,
 non-deliverable alias `username@users.borealis.invalid`. No email is sent, and
 email-based login, recovery, and account linking are not exposed.
@@ -86,31 +85,37 @@ without a CPU override or billing change. Legacy-password signin is locally test
 but not production-verified; physical approved-app installation remains unverified.
 See the [deployment runbook](deployment.md) for the remaining checks.
 
-The shared catalog is curator-managed. Each member's chosen apps, phones,
-assignments, and job history are scoped to that account. Phone pairing is
+Each person's library, phones, and job history are scoped to that account.
+Search and new additions validate canonical Play metadata against an automatic
+category policy and targeted email/browser exclusions; client-supplied categories
+cannot authorize an app. This is best-effort classification, not human review.
+Phone pairing is
 claimed atomically by entering the exact short-lived code, never by listing
 other people's pending requests. The phone continues using its independent
 device credential, not the browser username or password.
 
-One-time, setup-token-protected curator creation claims pre-account data;
-public signup can never claim it or grant curator privileges. Ownership and
-bootstrap metadata are part of the database backup, alongside the signing key.
+Public signup creates an ordinary account. Legacy role, allowlist, assignment,
+and bootstrap storage can remain for non-destructive compatibility; they do not
+grant a shared approval workflow. Existing ownership and signing keys are preserved.
 
 ## Trust model
 
-- A package must appear in the companion's positive allowlist before it can be assigned.
+- A package must belong to the paired account's personal library before the service issues its install job.
 - Pairing creates a high-entropy device bearer; the server stores only its SHA-256 digest.
 - The companion signs the exact job payload with a persisted Ed25519 key.
 - The phone stores the paired signing public key and verifies the raw payload bytes before decoding or acting on a job.
 - Jobs are bound to one device, expire quickly, carry a nonce, and name exactly one package.
-- The phone validates the downloaded base package, version, complete split set, per-file size and SHA-256, and accepted publisher signer before committing one atomic install session.
-- A missing signer pin is a review state, not an automatic approval.
+- The phone validates package/version identity, the complete split set, and Play-provided file sizes/checksums before committing one atomic install session.
+- First installation trusts authenticated Google Play delivery and Android's APK signature validation, without an operator certificate pin. Updates additionally compare the installed and downloaded signing histories; Android remains the final signature/rotation authority.
+- The optional signer field remains readable for protocol compatibility; personal-library jobs do not require a global publisher pin. This deliberately removes independent pre-install publisher approval, not package-integrity verification.
 
 This model protects Borealis's own path. It does not prevent installation through ADB, another installer, a modified build, or LightOS developer settings.
 
 ## Update behavior
 
-The phone schedules periodic sync as a fallback and can later use Light push as a wake hint. Android's confirmation UI is always supported. Borealis may request unattended updates only when Android allows the existing installer of record to do so; a required confirmation is not treated as a failure.
+The phone retains library rows after an install finishes and looks up installed versions through the SDK. Update checks request Play metadata, not APK downloads. A failed version lookup is shown as unavailable rather than up to date. Periodic sync checks installed library apps for updates; initial installs remain a phone action. Android's confirmation UI is always supported. Borealis may request unattended updates only when Android allows the existing installer of record to do so; a required confirmation is not treated as a failure.
+
+Download progress aggregates real bytes across the base APK and every split, with bounded UI refresh frequency. Resolving, verifying, handing to Android, and waiting for user confirmation are distinct stages. These stages do not invent percentages when the installer provides none.
 
 ## Unsupported SDK lane
 

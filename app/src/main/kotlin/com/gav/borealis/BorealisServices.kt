@@ -75,6 +75,7 @@ class BorealisServices private constructor(
                             coordinator = coordinator,
                             downloader = downloader,
                             verifier = SignedJobVerifier(),
+                            latestVersionCode = play::latestVersionCode,
                             clearPlayAuthentication = { play.changeAuthentication { google.disconnect() } },
                         ),
                         play = play,
