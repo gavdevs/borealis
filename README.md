@@ -1,5 +1,7 @@
 # Borealis
 
+<img src="docs/icon.png" alt="Borealis North arrow icon" width="112" height="112">
+
 Borealis is an intentionally unsupported, sideload-only installer and updater for Light Phone III. Sign in on the web, search for an eligible app, and add it to your personal library. Your library appears on your paired phones, where you can install apps and see whether installed apps need updating. The phone has no store to browse: it downloads the correct Play artifacts, verifies them, and hands the complete base-and-split set to Android's installer.
 
 This is not a Light Tool Library project and is not affiliated with Light, Aurora OSS, or Google. It constrains only the Borealis installation path; it is not a phone-wide application blocker.
@@ -25,6 +27,8 @@ page inside Borealis; no separately installed browser is required. Your connecti
 is saved securely on the phone. The companion does not collect Google credentials,
 and Borealis does not store your Google password.
 Use `DISCONNECT` to remove Borealis's saved Play credentials from the phone.
+Once connected, the home button changes to `SIGNED IN`; tap it to manage the
+saved connection without repeating sign-in.
 
 Your Borealis username/password account is separate from this Google sign-in.
 Use the companion to pair phones and manage your library. Adding an app makes it
@@ -57,7 +61,20 @@ confirmation are separate stages, not a fabricated completion percentage.
 - **Distribution:** [GitHub Actions and signed releases](docs/releases.md) build
   against the pinned, patched SDK on hosted runners. Release builds require the
   dedicated Borealis signing key and production HTTPS URL. Releases start as
-  private drafts, not public APK distribution.
+  reviewable drafts; public publication is an explicit release step. The
+  [BrightMarket release kit](store/brightmarket/README.md) contains listing copy,
+  metadata, icon, screenshots, and the submission checklist.
+
+## Screenshots
+
+Phone screenshots show actual LP3 behavior. Companion screenshots use fictional
+demo data in the real web UI; they are not examples of guaranteed app availability.
+
+<img src="docs/screenshots/02-phone-download.png" alt="A real MIKU download with percentage, megabytes, and split-file progress on Light Phone III" width="270">
+
+<img src="docs/screenshots/04-web-library.png" alt="Borealis companion personal library with fictional demo apps" width="800">
+
+See [all screenshots and capture details](store/brightmarket/README.md#screenshots).
 
 ## Development status
 
@@ -71,9 +88,11 @@ The first vertical slice is under active construction:
 6. Verify package identity, signer, size, and hashes, then request installation.
 7. Report the final result to the companion and periodically check for updates.
 
-The prototype has passed initial phone unit tests and compilation, companion
-unit tests and typechecks, and fixture-based browser flows. Physical LP3
-end-to-end installation/update remains unverified. App admission uses server-side
+The personal-library flow has passed phone unit tests and compilation, companion
+unit tests and typechecks, and fixture-based browser flows. On 2026-09-27,
+alpha.4 completed MIKU's real download and installation on an LP3, and the app
+then showed Up to date. Actual updates of existing third-party apps remain to test.
+App admission uses server-side
 Play-category filtering and targeted email/browser exclusions, not human approval.
 This automatic policy is a best-effort filter, not a guarantee that every app in
 an eligible category fits the philosophy. Accounts, libraries, and phones stay isolated.
@@ -83,14 +102,14 @@ backup. Existing account IDs, roles, password hashes, phone ownership, and exact
 signing-key bytes were verified unchanged. Browsers must sign in again; Better Auth
 uses opaque session tokens and signed cookies. Wrangler deployment to Workers Free
 and hosted HTTPS account, pairing, and signed-job checks passed; temporary fixtures
-were cleaned. Legacy-password production signin, native GitHub build connection,
-and physical LP3 end-to-end approved-app installation remain unverified. See the
+were cleaned. Legacy-password production signin and the native GitHub build
+connection remain unverified. See the
 [deployment runbook](docs/deployment.md) for session-secret handling and remaining checks.
 
 On alpha.3 the LP3 completed Google authentication, securely saved the reusable
 credential, reused it successfully, and downloaded MIKU to the old publisher-review
-gate. The personal-library changes remove that gate. Completed third-party
-installation/update still needs physical testing. This experimental flow is not
+gate. Alpha.4 removed that gate and completed the MIKU installation, with Android
+identifying Borealis as its installer. This experimental flow is not
 supported Google OAuth, and future Google behavior can change.
 
 Borealis is one shared hosted service where each person logs in and

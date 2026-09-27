@@ -16,10 +16,27 @@ def release_policy(tag, tool):
         'prerelease': prerelease,
         'fastPrerelease': prerelease,
         'channel': match.group(1) or 'stable',
-        'draft': not prerelease,
         'minified': not prerelease,
         'shrinkResources': not prerelease,
     }
+
+
+def publication_flags(repository, is_private, prerelease):
+    """Choose GitHub flags independently from APK optimization/build policy.
+
+    Stable builds and every build of a public repository require an explicit
+    publication decision. Only private testing prereleases publish automatically.
+    """
+    if repository != 'gavdevs/borealis':
+        raise ValueError('Only the trusted gavdevs/borealis repository may create releases.')
+    if type(is_private) is not bool or type(prerelease) is not bool:
+        raise ValueError('Repository visibility and prerelease channel must be explicit booleans.')
+    flags = []
+    if not is_private or not prerelease:
+        flags.append('--draft')
+    if prerelease:
+        flags.extend(['--prerelease', '--latest=false'])
+    return flags
 
 
 def validate_build_metadata(build, policy, tool):
@@ -49,7 +66,8 @@ def validate_apk_badging(badging, tool):
 
 def release_notes(tag, tool, commit, certificate, policy):
     if policy['prerelease']:
-        status = ('Fast prerelease for physical-device testing, published only inside the private repository. '
+        status = ('Fast prerelease for physical-device testing. Automatic publication is permitted only '
+                  'inside the private repository; builds of a public repository remain drafts for review. '
                   'Not a stable release; compilation and tests still run. Code/resource shrinking is disabled; '
                   'the APK remains non-debuggable and uses the normal release signing identity. '
                   'Hardware behavior is not established by build success.')
@@ -72,6 +90,8 @@ A development-key installation cannot update in place to the dedicated release k
 plan that initial transition before uninstalling anything.
 
 Keep the source archives, SDK patch, dependency manifest, build instructions,
-and license notices together with the APK when distributing it. This private
-GitHub release does not make source available to recipients outside this repository.
+and license notices together with the APK when distributing it. While this repository
+is private, its source links are not accessible to recipients outside the repository.
+Making a public draft does not publish its APK; public distribution is a separate,
+explicit maintainer decision after hardware and source-package review.
 '''

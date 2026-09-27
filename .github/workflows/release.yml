@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   release:
-    if: github.repository == 'gavdevs/borealis' && github.event.repository.private == true
+    if: github.repository == 'gavdevs/borealis'
     runs-on: ubuntu-24.04
     timeout-minutes: 50
     permissions:
@@ -98,7 +98,7 @@ jobs:
           from pathlib import Path
           (Path(os.environ['RUNNER_TEMP']) / 'borealis-release.p12').unlink(missing_ok=True)
           PY
-      - name: Create stable draft or publish testing prerelease
+      - name: Create review draft or private testing prerelease
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -106,18 +106,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$(gh repo view "$GH_REPO" --json isPrivate --jq .isPrivate)" != 'true' ]]; then
-            echo 'Borealis release publication requires the repository to remain private.' >&2
-            exit 1
-          fi
-          if [[ "$BOREALIS_PRERELEASE" == 'true' ]]; then
-            release_flags=(--prerelease --latest=false)
-          elif [[ "$BOREALIS_PRERELEASE" == 'false' ]]; then
-            release_flags=(--draft)
-          else
-            echo 'Missing validated release channel.' >&2
-            exit 1
-          fi
+          repository_metadata="$(gh repo view "$GH_REPO" --json nameWithOwner,isPrivate)"
+          export BOREALIS_REPOSITORY_JSON="$repository_metadata"
+          release_flags_text="$(python3 - <<'PY'
+          import json
+          import os
+          import sys
+          sys.path.insert(0, 'scripts')
+          from release_policy import publication_flags
+          repository = json.loads(os.environ['BOREALIS_REPOSITORY_JSON'])
+          channel = os.environ['BOREALIS_PRERELEASE']
+          if channel not in ('true', 'false'):
+              raise SystemExit('Missing validated release channel.')
+          flags = publication_flags(repository['nameWithOwner'], repository['isPrivate'], channel == 'true')
+          print('\n'.join(flags))
+          PY
+          )"
+          mapfile -t release_flags <<< "$release_flags_text"
           gh release create "$RELEASE_TAG" release-output/* --verify-tag "${release_flags[@]}" \
             --title "Borealis $RELEASE_TAG" --notes-file release-output/RELEASE-NOTES.md
       - name: Retain packaged release artifacts for troubleshooting

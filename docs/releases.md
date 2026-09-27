@@ -2,7 +2,9 @@
 
 Borealis is an experimental, independently signed, sideload-only Light Phone III
 app. These workflows do not use Light's signing service or imply Tool Library
-approval. The repository and its GitHub releases remain private.
+approval. The workflow supports private testing and reviewed public releases.
+Repository visibility and release publication are separate from building: stable
+releases and all public-repository prereleases are created as drafts first.
 
 ## Pipelines
 
@@ -21,8 +23,13 @@ approval. The repository and its GitHub releases remain private.
   The tag must exactly match `app/lighttool.toml` and refer to a commit on `main`.
   Stable `vX.Y.Z` tags produce a minified **draft** for review. Numbered
   `vX.Y.Z-alpha.N`, `-beta.N`, and `-rc.N` tags produce a non-minified,
-  non-debuggable APK and automatically publish a **prerelease inside the private
-  repository**, never marking it latest. Both lanes use the same dedicated
+  non-debuggable APK. They automatically publish a **prerelease only while the
+  repository is private**, never marking it latest. If the repository later becomes
+  public, prereleases also remain **drafts**, preserving their prerelease flag;
+  no tag automatically publishes a public release. The tested
+  `publication_flags` helper reads the current repository identity and visibility
+  at release creation. Only `gavdevs/borealis` can run this release workflow.
+  Both lanes use the same dedicated
   signing identity, production companion URL, SDK/app tests, source/license
   bundles, and dependency provenance. Repository signing secrets are used; no
   GitHub environment or paid deployment-protection feature is required.
@@ -69,13 +76,16 @@ app state. See [Android's signing guidance](https://developer.android.com/studio
 
 1. Review and commit the intended release changes on `main`. Set the semantic
    `versionName` and a strictly increasing `versionCode` in `app/lighttool.toml`
-   before each new release tag, including prereleases. The current fast candidate
+   before each new release tag, including prereleases. The latest testing build
    is `0.1.6-alpha.4`, version code `10`. It replaces the curator gate with
    personal-library Install/Update actions, persistent installed/update status,
    and real download progress plus explicit installation stages. Alpha.3 already
    passed phone-local Google sign-in and saved-session reuse on the LP3; that
-   authentication transport and profile are unchanged. Never move a failed tag
-   onto fixed source.
+   authentication transport and profile are unchanged. Alpha.4 has installed MIKU
+   on the physical LP3. The planned store candidate is `0.1.6`, version code `11`:
+   a minified, normally signed **private draft** that must be verified separately.
+   A successful unoptimized alpha does not establish that the minified candidate
+   works. Never move a failed tag onto fixed source.
 2. Push the reviewed commit to `main`. For stable release candidates, wait for
    full CI to pass on that exact commit. A testing prerelease can start as soon
    as the commit is on `main`: its release workflow independently runs the
@@ -86,15 +96,15 @@ app state. See [Android's signing guidance](https://developer.android.com/studio
    commit. For the current candidate, after confirming `HEAD` is that commit:
 
    ```sh
-   git tag -a v0.1.6-alpha.4 -m "Borealis v0.1.6-alpha.4"
-   git push origin refs/tags/v0.1.6-alpha.4
+   git tag -a v0.1.6 -m "Borealis v0.1.6"
+   git push origin refs/tags/v0.1.6
    ```
 
    The tag push starts `Android release` on GitHub-hosted runners. A manual
    run can retry the same existing tag if no release for it exists:
 
    ```sh
-   gh workflow run release.yml --ref main -f tag=v0.1.6-alpha.4
+   gh workflow run release.yml --ref main -f tag=v0.1.6
    ```
 
 4. Download the resulting private prerelease (or stable draft) and verify the APK
@@ -102,10 +112,44 @@ app state. See [Android's signing guidance](https://developer.android.com/studio
    in-place update without clearing pairing or account data.
    Build/test success alone does not establish package installation or banking-app
    compatibility on the phone.
-5. Stable drafts still require review before publication. Prereleases publish
-   automatically for testing, with `--prerelease --latest=false`. The workflow
-   refuses publication if the repository is no longer private. Publishing a
-   release in this repository does **not** make the private repo public.
+5. Stable drafts always require review before publication. Private prereleases
+   publish automatically for testing with `--prerelease --latest=false`. Public
+   prereleases use `--draft --prerelease --latest=false` instead. The workflow
+   rejects unknown visibility/channel values and any other repository identity.
+   Creating or publishing a release does **not** change repository visibility.
+
+## BrightMarket publication handoff
+
+Preparing store assets and a signed draft does not publish the app or submit a
+listing. BrightMarket's current validator requires
+a public, unarchived repository and a published, non-draft, non-prerelease release
+containing one unambiguous installable APK. It does not admit a prerelease-only
+app as a first listing. Once a stable default exists, newer prereleases may appear
+as an opt-in preview channel. These are [current validator rules](https://github.com/gi-os/brightmarket-index/blob/main/scripts/validate_submission.py#L308-L335),
+not a reason to relabel alpha.4 as stable without checking the candidate.
+
+For the public launch:
+
+1. Review the repository and history for material that must remain private,
+   license/source completeness, support information, and account/privacy disclosures.
+   Keep signing keys and runtime credentials private; never place them in release assets.
+2. Verify the normally minified candidate on the LP3, including Google sign-in,
+   saved-session reuse, library sync, app installation, and installed/update states.
+   Preserve `com.gav.borealis`, the dedicated signing certificate, and increasing codes.
+3. After the checks pass, make the repository public and manually publish the reviewed
+   stable draft. Stable and public-prerelease workflows remain draft-only afterward; future
+   public releases also need a deliberate publication decision.
+4. Confirm anonymous readers can access the published APK, its complete corresponding
+   source assets, `docs/icon.png`, and numbered files in `docs/screenshots` on the
+   default branch. Do not publish the old `v0.1.1`–`v0.1.5` drafts as a shortcut.
+5. Submit through the [BrightMarket portal](https://brightmarket.gzl.dev/submit.html)
+   as a separate listing action. The portal verifies repo ownership, files the
+   submission, and the store's workflow opens a listing PR. Borealis does not submit
+   itself or claim official Light Tool Library approval.
+
+The full listing package and assets are maintained separately from this build guide.
+No public repository transition, release publication, or store submission is part
+of merely preparing the candidate.
 
 The fast lane skips release optimization and the wait for companion CI, not
 Kotlin compilation, signing, or source packaging. It still builds on GitHub and

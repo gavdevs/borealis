@@ -1,8 +1,9 @@
 [tool]
 id = "com.gav.borealis"
 label = "Borealis"
-versionCode = 10
-versionName = "0.1.6-alpha.4"
+icon = "@mipmap/ic_borealis_launcher"
+versionCode = 11
+versionName = "0.1.6"
 permissions = ["android.permission.INTERNET", "android.permission.ACCESS_NETWORK_STATE", "android.permission.WAKE_LOCK"]
 capabilities = ["package-install-request"]
 serverPackage = "com.lightos"

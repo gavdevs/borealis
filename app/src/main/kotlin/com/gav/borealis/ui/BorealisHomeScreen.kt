@@ -79,6 +79,7 @@ data class BorealisUiState(
     val library: List<LibraryAppState> = emptyList(),
     val installProgress: InstallProgress? = null,
     val installAccessGranted: Boolean = false,
+    val googleAccountStatus: GoogleAccountStatus = GoogleAccountStatus.Unavailable,
     val loading: Boolean = true,
     val statusMessage: String? = null,
     val errorMessage: String? = null,
@@ -86,6 +87,7 @@ data class BorealisUiState(
 
 class BorealisHomeViewModel(
     private val repository: BorealisRepository,
+    private val isGoogleConnected: suspend () -> Boolean,
 ) : LightViewModel<Unit>() {
     private val _uiState = MutableStateFlow(BorealisUiState())
     val uiState: StateFlow<BorealisUiState> = _uiState.asStateFlow()
@@ -103,6 +105,7 @@ class BorealisHomeViewModel(
         requestJob = viewModelScope.launch(Dispatchers.IO) {
             try {
                 val local = repository.load()
+                val googleAccountStatus = readGoogleAccountStatus(isGoogleConnected)
                 _uiState.update {
                     it.copy(
                         session = local.session,
@@ -110,6 +113,7 @@ class BorealisHomeViewModel(
                         library = local.library,
                         installProgress = local.installProgress,
                         installAccessGranted = repository.canRequestPackageInstalls,
+                        googleAccountStatus = googleAccountStatus,
                         loading = false,
                         errorMessage = null,
                     )
@@ -219,6 +223,10 @@ class BorealisHomeViewModel(
     private suspend fun syncInternal(showLoading: Boolean = false) {
         _uiState.update { it.copy(loading = true, errorMessage = if (showLoading) null else it.errorMessage) }
         try {
+            if (showLoading) {
+                val googleAccountStatus = readGoogleAccountStatus(isGoogleConnected)
+                _uiState.update { it.copy(googleAccountStatus = googleAccountStatus) }
+            }
             repository.reconcilePendingInstall()?.let { result ->
                 _uiState.update { it.copy(statusMessage = result.message) }
             }
@@ -312,7 +320,7 @@ class BorealisHomeScreen(sealedActivity: SealedLightActivity) :
     private val services = BorealisServices.from(lightContext)
 
     override val viewModelClass = BorealisHomeViewModel::class.java
-    override fun createViewModel() = BorealisHomeViewModel(services.repository)
+    override fun createViewModel() = BorealisHomeViewModel(services.repository, services::isGoogleConnected)
 
     override fun willShow() {
         viewModel.load()
@@ -356,8 +364,8 @@ class BorealisHomeScreen(sealedActivity: SealedLightActivity) :
 
     @Composable
     private fun ActionBar(state: BorealisUiState) {
-        val signInButton = LightBarButton.Text(
-            text = "SIGN IN",
+        val googleAccountButton = LightBarButton.Text(
+            text = state.googleAccountStatus.buttonLabel,
             onClick = { navigateTo(::BorealisGoogleScreen) { viewModel.load() } },
         )
         val items = when {
@@ -384,10 +392,10 @@ class BorealisHomeScreen(sealedActivity: SealedLightActivity) :
             )
             !state.installAccessGranted -> listOf(
                 LightBarButton.Text(text = "ALLOW INSTALLS", onClick = viewModel::openInstallSettings),
-                signInButton,
+                googleAccountButton,
             )
             else -> listOf(
-                signInButton,
+                googleAccountButton,
                 LightBarButton.LightIcon(
                     icon = LightIcons.REFRESH,
                     onClick = viewModel::sync,

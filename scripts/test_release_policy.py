@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from release_policy import (
-    COMPANION_URL, release_notes, release_policy, validate_apk_badging, validate_build_metadata,
+    COMPANION_URL, publication_flags, release_notes, release_policy, validate_apk_badging, validate_build_metadata,
 )
 
 SPEC = importlib.util.spec_from_file_location('release_metadata', Path(__file__).with_name('release-metadata.py'))
@@ -29,21 +29,50 @@ def build_metadata(version='0.1.6-alpha.1'):
 
 
 class ReleasePolicyTest(unittest.TestCase):
-    def test_stable_is_minified_draft(self):
+    def test_stable_is_minified(self):
         policy = release_policy('v0.1.6', tool('0.1.6'))
         self.assertEqual(policy, {
             'prerelease': False, 'fastPrerelease': False, 'channel': 'stable',
-            'draft': True, 'minified': True, 'shrinkResources': True,
+            'minified': True, 'shrinkResources': True,
         })
 
-    def test_numbered_prerelease_channels_publish_fast(self):
+    def test_numbered_prerelease_channels_build_fast(self):
         for channel in ('alpha', 'beta', 'rc'):
             with self.subTest(channel=channel):
                 version = f'0.1.6-{channel}.12'
                 self.assertEqual(release_policy('v' + version, tool(version)), {
                     'prerelease': True, 'fastPrerelease': True, 'channel': channel,
-                    'draft': False, 'minified': False, 'shrinkResources': False,
+                    'minified': False, 'shrinkResources': False,
                 })
+
+    def test_stable_is_always_a_draft_regardless_of_visibility(self):
+        for is_private in (True, False):
+            with self.subTest(is_private=is_private):
+                self.assertEqual(publication_flags('gavdevs/borealis', is_private, False), ['--draft'])
+
+    def test_private_prereleases_keep_automatic_testing_publication(self):
+        self.assertEqual(publication_flags('gavdevs/borealis', True, True), ['--prerelease', '--latest=false'])
+
+    def test_public_prereleases_are_never_automatically_published(self):
+        self.assertEqual(publication_flags('gavdevs/borealis', False, True), ['--draft', '--prerelease', '--latest=false'])
+
+    def test_publication_flags_fail_closed_for_other_repositories_and_ambiguous_inputs(self):
+        for repository in ('other/borealis', 'gavdevs/other', '', None):
+            with self.subTest(repository=repository), self.assertRaises(ValueError):
+                publication_flags(repository, True, True)
+        for value in ('true', 'false', 0, 1, None):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                publication_flags('gavdevs/borealis', value, True)
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                publication_flags('gavdevs/borealis', True, value)
+
+    def test_workflow_calls_the_shared_publication_policy(self):
+        workflow = (Path(__file__).resolve().parent.parent / '.github/workflows/release.yml').read_text()
+        self.assertIn("if: github.repository == 'gavdevs/borealis'", workflow)
+        self.assertIn('from release_policy import publication_flags', workflow)
+        self.assertIn("publication_flags(repository['nameWithOwner'], repository['isPrivate'], channel == 'true')", workflow)
+        self.assertIn('--json nameWithOwner,isPrivate', workflow)
+        self.assertIn('"${release_flags[@]}"', workflow)
 
     def test_invalid_versions_fail_closed(self):
         for version in ('0.1.6-alpha', '0.1.6-alpha.0', '0.1.6-alpha.01', '0.1.6-BETA.1',

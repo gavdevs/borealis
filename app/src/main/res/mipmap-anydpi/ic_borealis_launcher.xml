@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Flat fallback uses the same framing as branding/borealis-icon.svg. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="32"
+    android:viewportHeight="32">
+    <path android:fillColor="#FF000000" android:pathData="M0 0H32V32H0Z" />
+    <group android:translateX="4" android:translateY="4">
+        <path
+            android:fillColor="#00000000"
+            android:strokeColor="#FFFFFFFF"
+            android:strokeWidth="2"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="miter"
+            android:pathData="M6.8 5.9A8 8 0 1 0 18.1 17.2" />
+        <path
+            android:fillColor="#00000000"
+            android:strokeColor="#FFFFFFFF"
+            android:strokeWidth="2"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="miter"
+            android:pathData="M12 12L19.8 4.2M14.8 4.2H19.8V9.2" />
+    </group>
+</vector>
