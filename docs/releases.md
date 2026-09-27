@@ -72,6 +72,21 @@ dedicated-key APK cannot update an existing development-key installation in plac
 plan the transition before uninstalling anything, because uninstalling loses local
 app state. See [Android's signing guidance](https://developer.android.com/studio/publish/app-signing).
 
+## Package migration in v0.1.7
+
+Version 0.1.7/code 12 changes the Android application ID to
+`com.loosewire.borealis`, matching the Lightious/Kelp namespace. Older releases
+use `com.gav.borealis`. The same dedicated signing key is retained, but Android
+still treats the new ID as a separate app. Do not change or remove published tags
+or APKs to disguise the transition.
+
+Install the new app without removing the old one, then pair it, sign in with
+Google, and grant installation access. App-local pairing data and package-bound
+Google credentials are not copied. The website account/library and installed
+third-party apps are unchanged; updates may need Android confirmation because
+the new package is not their original installer. Future releases retain the new
+ID and signing key for normal in-place updates.
+
 ## Create a stable draft or testing prerelease
 
 1. Review and commit the intended release changes on `main`. Set the semantic
@@ -82,7 +97,7 @@ app state. See [Android's signing guidance](https://developer.android.com/studio
    and real download progress plus explicit installation stages. Alpha.3 already
    passed phone-local Google sign-in and saved-session reuse on the LP3; that
    authentication transport and profile are unchanged. Alpha.4 has installed MIKU
-   on the physical LP3. The store release is `0.1.6`, version code `11`:
+   on the physical LP3. The renamed store candidate is `0.1.7`, version code `12`:
    a minified, normally signed build, initially created as a **draft** for review.
    A successful unoptimized alpha does not establish that the minified candidate
    works. Never move a failed tag onto fixed source.
@@ -96,20 +111,21 @@ app state. See [Android's signing guidance](https://developer.android.com/studio
    commit. For the current candidate, after confirming `HEAD` is that commit:
 
    ```sh
-   git tag -a v0.1.6 -m "Borealis v0.1.6"
-   git push origin refs/tags/v0.1.6
+   git tag -a v0.1.7 -m "Borealis v0.1.7"
+   git push origin refs/tags/v0.1.7
    ```
 
    The tag push starts `Android release` on GitHub-hosted runners. A manual
    run can retry the same existing tag if no release for it exists:
 
    ```sh
-   gh workflow run release.yml --ref main -f tag=v0.1.6
+   gh workflow run release.yml --ref main -f tag=v0.1.7
    ```
 
 4. Download the resulting prerelease or draft and verify the APK
-   on a physical Light Phone. The unchanged package/signing identity supports an
-   in-place update without clearing pairing or account data.
+   on a physical Light Phone. Matching package/signing identities support an
+   in-place update without clearing pairing or account data. The v0.1.7 package
+   migration instead requires the separate installation described above.
    Build/test success alone does not establish package installation or banking-app
    compatibility on the phone.
 5. Stable drafts always require review before publication. Private prereleases
@@ -135,7 +151,7 @@ For the public launch:
    Keep signing keys and runtime credentials private; never place them in release assets.
 2. Verify the normally minified candidate on the LP3, including Google sign-in,
    saved-session reuse, library sync, app installation, and installed/update states.
-   Preserve `com.gav.borealis`, the dedicated signing certificate, and increasing codes.
+   Preserve `com.loosewire.borealis`, the dedicated signing certificate, and increasing codes.
 3. After the checks pass, make the repository public and manually publish the reviewed
    stable draft. Stable and public-prerelease workflows remain draft-only afterward; future
    public releases also need a deliberate publication decision.

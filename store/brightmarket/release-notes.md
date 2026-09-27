@@ -1,12 +1,21 @@
-# Borealis 0.1.6
+# Borealis 0.1.7
 
 A few essential apps, without a full app store on your Light Phone.
 
 **[Sign in or create an account → borealis.loosewire.dev](https://borealis.loosewire.dev)**
 
-[Pairing and setup guide](https://github.com/gavdevs/borealis#readme) · [Download the APK](https://github.com/gavdevs/borealis/releases/download/v0.1.6/borealis-v0.1.6-vc11.apk)
+[Pairing and setup guide](https://github.com/gavdevs/borealis#readme) · [Download the APK](https://github.com/gavdevs/borealis/releases/download/v0.1.7/borealis-v0.1.7-vc12.apk)
 
 ## What's new
+
+The Android package name now matches the other Loosewire apps. **If you used
+0.1.6 or earlier, this installs separately:** pair the new app, sign in with
+Google again, and grant Allow installs. Your website account, library, already
+installed apps, and old Borealis installation stay intact. Updates to existing
+apps may ask for Android confirmation because the installer identity changed.
+Future releases will update this new installation normally.
+
+## Included
 
 - Your personal library: search on the website, add eligible apps, then install them on your phone. No curator approval.
 - Real download progress with percentages, megabytes, and clear installation stages.

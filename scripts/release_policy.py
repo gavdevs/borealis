@@ -9,7 +9,7 @@ def release_policy(tag, tool):
     match = re.fullmatch('v' + VERSION_PATTERN, tag)
     if not match or tag != f"v{tool['versionName']}":
         raise ValueError('Release tag must exactly match v<versionName>; supported suffixes are alpha.N, beta.N, and rc.N.')
-    if tool['id'] != 'com.gav.borealis' or type(tool['versionCode']) is not int or not 1 <= tool['versionCode'] <= 2_100_000_000:
+    if tool['id'] != 'com.loosewire.borealis' or type(tool['versionCode']) is not int or not 1 <= tool['versionCode'] <= 2_100_000_000:
         raise ValueError('Unexpected tool identity or versionCode.')
     prerelease = match.group(1) is not None
     return {
@@ -85,9 +85,12 @@ Experimental, sideload-only Light Phone III build. Not an approved Light tool.
 
 {status}
 
-An existing dedicated-key installation can update in place without clearing data.
-A development-key installation cannot update in place to the dedicated release key;
-plan that initial transition before uninstalling anything.
+An existing `com.loosewire.borealis` installation signed with the dedicated release
+key can update in place without clearing data. Older `com.gav.borealis` builds are
+a different Android app: this release installs separately and requires pairing
+and Google sign-in again. Do not uninstall the old app merely to install this one.
+A development-key installation of the same package cannot update in place to the
+dedicated release key; plan that transition before uninstalling anything.
 
 Keep the source archives, SDK patch, dependency manifest, build instructions,
 and license notices together with the APK when distributing it. While this repository

@@ -14,7 +14,7 @@ SPEC.loader.exec_module(METADATA)
 
 
 def tool(version='0.1.6-alpha.1'):
-    return {'id': 'com.gav.borealis', 'versionName': version, 'versionCode': 7}
+    return {'id': 'com.loosewire.borealis', 'versionName': version, 'versionCode': 7}
 
 
 def build_metadata(version='0.1.6-alpha.1'):
@@ -93,6 +93,11 @@ class ReleasePolicyTest(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 release_policy('v0.1.6-alpha.1', tool() | changes)
 
+    def test_previous_package_identity_is_rejected_for_future_releases(self):
+        for version in ('0.1.6', '0.1.6-alpha.1'):
+            with self.subTest(version=version), self.assertRaisesRegex(ValueError, 'Unexpected tool identity'):
+                release_policy('v' + version, tool(version) | {'id': 'com.gav.borealis'})
+
     def test_valid_stable_and_fast_build_metadata(self):
         for version in ('0.1.6', '0.1.6-alpha.1'):
             with self.subTest(version=version):
@@ -123,16 +128,26 @@ class ReleasePolicyTest(unittest.TestCase):
             validate_build_metadata(build, release_policy('v0.1.6-alpha.1', tool()), tool())
 
     def test_packaged_apk_identity_is_checked_independently(self):
-        validate_apk_badging("package: name='com.gav.borealis' versionCode='7' versionName='0.1.6-alpha.1' platformBuildVersionName='16'\n", tool())
-        for badging in ('', "package: name='com.gav.borealis' versionCode='6' versionName='0.1.6-alpha.1'",
+        validate_apk_badging("package: name='com.loosewire.borealis' versionCode='7' versionName='0.1.6-alpha.1' platformBuildVersionName='16'\n", tool())
+        for badging in ('', "package: name='com.loosewire.borealis' versionCode='6' versionName='0.1.6-alpha.1'",
+                        "package: name='com.gav.borealis' versionCode='7' versionName='0.1.6-alpha.1'",
                         "package: name='com.example.other' versionCode='7' versionName='0.1.6-alpha.1'",
-                        "package: name='com.gav.borealis' versionCode='7' versionName='0.1.6'"):
+                        "package: name='com.loosewire.borealis' versionCode='7' versionName='0.1.6'"):
             with self.subTest(badging=badging), self.assertRaises(ValueError):
                 validate_apk_badging(badging, tool())
 
     def test_debuggable_packaged_apk_is_rejected(self):
         with self.assertRaises(ValueError):
-            validate_apk_badging("package: name='com.gav.borealis' versionCode='7' versionName='0.1.6-alpha.1'\napplication-debuggable\n", tool())
+            validate_apk_badging("package: name='com.loosewire.borealis' versionCode='7' versionName='0.1.6-alpha.1'\napplication-debuggable\n", tool())
+
+    def test_notes_explain_package_migration_without_requiring_uninstall(self):
+        note = release_notes('v0.1.6', tool('0.1.6'), 'abc123', 'abc456',
+                             release_policy('v0.1.6', tool('0.1.6')))
+        self.assertIn('`com.loosewire.borealis` installation signed with the dedicated release', note)
+        self.assertIn('Older `com.gav.borealis` builds are', note)
+        self.assertIn('installs separately and requires pairing', note)
+        self.assertIn('Google sign-in again', note)
+        self.assertIn('Do not uninstall the old app merely to install this one.', note)
 
     def test_notes_distinguish_prerelease_and_draft(self):
         for version, required, excluded in (

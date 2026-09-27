@@ -1,13 +1,13 @@
 # BrightMarket release kit
 
-Public release: **[Borealis v0.1.6](https://github.com/gavdevs/borealis/releases/tag/v0.1.6)**,
-Android version code **11**, package **com.gav.borealis**. The signed release is
-installed on the physical LP3 and the repository is public. This kit is ready for
-submission; BrightMarket has not received or accepted a listing through this work.
+Release target: **Borealis v0.1.7**, Android version code **12**, package
+**com.loosewire.borealis**. This adopts the same namespace as Lightious and Kelp.
+The renamed candidate still needs build, APK, phone, and publication checks before
+submission. BrightMarket has not received or accepted a listing through this work.
 
 ## Listing
 
-- [Catalog YAML](com.gav.borealis.yml): ready for `apps/com.gav.borealis.yml` in
+- [Catalog YAML](com.loosewire.borealis.yml): ready for `apps/com.loosewire.borealis.yml` in
   the BrightMarket index; do not replace the whole catalog.
 - [Listing description](listing.md): public-facing copy and setup instructions.
 - [512px listing icon](../../docs/icon.png): use `docs/icon.png` in the Icon field.
@@ -17,6 +17,12 @@ submission; BrightMarket has not received or accepted a listing through this wor
 - Category: `utilities`.
 - Companion: `https://borealis.loosewire.dev`.
 - Application ID and signing identity must remain unchanged for future updates.
+
+The previous public v0.1.6 uses `com.gav.borealis`. Version 0.1.7 is a separate
+Android installation, not an in-place update from that package. Keep the old app
+and data intact while pairing and signing into the new app. The website account,
+library, and installed third-party apps remain; their next updates may require
+Android confirmation because the new package is not their original installer.
 
 The short summary is within the submission portal's 140-character limit:
 
@@ -40,7 +46,9 @@ needed. Numbering deliberately shows phone behavior before the website.
 
 Phone captures are unedited 1080×1240 screen images, not a rendered mock phone.
 The download capture comes from the real successful MIKU installation on alpha.4;
-that progress UI is unchanged in v0.1.6. It is reused to avoid uninstalling a real
+that progress UI is unchanged in v0.1.6 and the v0.1.7 namespace change. The library
+and connection captures remain from v0.1.6; they are not evidence of v0.1.7 testing.
+Existing captures are reused to avoid uninstalling a real
 app or downloading another app solely to stage a photograph. No pairing codes,
 Google identifiers, passwords, or tokens appear in these images.
 
@@ -50,12 +58,13 @@ are not representations of Play availability or app compatibility.
 
 ## Publish and submit
 
-1. Verify CI, the signed stable APK, the original signing certificate, and an
-   in-place LP3 update. Check the packaged launcher icon and Signed in state.
+1. Verify CI, the signed stable APK, the original signing certificate, and a
+   separate LP3 installation of `com.loosewire.borealis`, preserving the old app.
+   Check the packaged launcher icon, fresh onboarding, and connection state.
 2. Make the repository public only after the tracked-source/history publication
    preflight. Keep runtime secrets and release signing keys in their existing
    encrypted stores; never upload local `.env`, database, or keystore files.
-3. Publish the verified **v0.1.6** stable release from its draft. Keep the one
+3. Publish the verified **v0.1.7** stable release from its draft. Keep the one
    release APK and all source/license/provenance assets together. Do not publish
    old stable drafts or relabel an alpha build as a stable release.
 4. Open the [BrightMarket submission portal](https://brightmarket.gzl.dev/submit.html),
@@ -76,6 +85,9 @@ Sources checked 2026-09-27: [submission validator](https://github.com/gi-os/brig
 and [icon discovery](https://github.com/gi-os/brightmarket-index/blob/main/scripts/extract_icons.py).
 
 ## Verification boundary
+
+The following is historical evidence for the old package, not a claim that the
+renamed v0.1.7 candidate has been built or tested yet.
 
 The v0.1.6 release at `63288da08863a70ee5001fb7ab0033c674599166` passed
 [CI](https://github.com/gavdevs/borealis/actions/runs/36357724823) and the
