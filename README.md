@@ -69,8 +69,6 @@ Follow the download on your phone:
 
 <img src="docs/screenshots/02-phone-download.png" alt="Borealis on Light Phone III showing download percentage, megabytes, and file progress" width="270">
 
-The website screenshot uses fictional demo apps. The phone screenshot is a real download.
-
 ## Good to know
 
 - Borealis is for **Light Phone III** and is an independent, experimental app—not
