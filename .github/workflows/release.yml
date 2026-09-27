@@ -38,6 +38,8 @@ jobs:
       - name: Verify stable and prerelease routing
         run: python3 -B -m unittest discover -s scripts -p 'test_release_*.py'
       - uses: ./.github/actions/setup-android
+        with:
+          cache-read-only: 'true'
       - name: Verify phone-local sign-in policy and credential encryption
         run: >-
           ./gradlew --no-daemon --max-workers=1 -p .ci/light-sdk
@@ -77,6 +79,7 @@ jobs:
           BOREALIS_FAST_PRERELEASE: ${{ steps.metadata.outputs.fast_prerelease }}
         run: >-
           ./gradlew --no-daemon --max-workers=1
+          -Dorg.gradle.jvmargs="-Xmx1536m -XX:MaxMetaspaceSize=1024m -XX:ActiveProcessorCount=2"
           -Pborealis.sdkPath=.ci/light-sdk
           -Pborealis.companionUrl=https://borealis.loosewire.dev
           -Pborealis.fastPrerelease=$BOREALIS_FAST_PRERELEASE

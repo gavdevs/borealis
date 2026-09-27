@@ -69,8 +69,8 @@ app state. See [Android's signing guidance](https://developer.android.com/studio
 
 1. Review and commit the intended release changes on `main`. Set the semantic
    `versionName` and a strictly increasing `versionCode` in `app/lighttool.toml`
-   before each new release tag, including prereleases. The first fast candidate
-   is `0.1.6-alpha.1`, version code `7`. Its authentication, HTTP transport, and
+   before each new release tag, including prereleases. The current fast candidate
+   is `0.1.6-alpha.2`, version code `8`. Its authentication, HTTP transport, and
    device profile deliberately remain unchanged from v0.1.5; disabling release
    optimization is a controlled comparison for the still-observed device-config
    HTTP 400, not a claimed fix. Never move a failed tag onto fixed source.
@@ -84,15 +84,15 @@ app state. See [Android's signing guidance](https://developer.android.com/studio
    commit. For the current candidate, after confirming `HEAD` is that commit:
 
    ```sh
-   git tag -a v0.1.6-alpha.1 -m "Borealis v0.1.6-alpha.1"
-   git push origin refs/tags/v0.1.6-alpha.1
+   git tag -a v0.1.6-alpha.2 -m "Borealis v0.1.6-alpha.2"
+   git push origin refs/tags/v0.1.6-alpha.2
    ```
 
    The tag push starts `Android release` on GitHub-hosted runners. A manual
    run can retry the same existing tag if no release for it exists:
 
    ```sh
-   gh workflow run release.yml --ref main -f tag=v0.1.6-alpha.1
+   gh workflow run release.yml --ref main -f tag=v0.1.6-alpha.2
    ```
 
 4. Download the resulting private prerelease (or stable draft) and verify the APK
@@ -108,6 +108,12 @@ app state. See [Android's signing guidance](https://developer.android.com/studio
 The fast lane skips release optimization and the wait for companion CI, not
 Kotlin compilation, signing, or source packaging. It still builds on GitHub and
 installs an APK; it is not hot reload and does not promise an instant build.
+
+The first alpha tag remains immutable: its build exhausted the 512 MiB Gradle
+metaspace cap before packaging, so no alpha.1 APK was published. Release jobs now
+allow 1024 MiB of metaspace on GitHub only, retaining the 1536 MiB heap and one
+worker. Local `gradle.properties` limits are unchanged. Release jobs restore the
+shared CI cache read-only; regular trusted CI remains responsible for warming it.
 
 The workflow intentionally fails if a release for the tag already exists. For an
 interrupted draft creation, inspect that draft and the run artifacts before deciding
