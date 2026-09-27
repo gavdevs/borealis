@@ -11,6 +11,7 @@ import com.gav.borealis.delivery.PlayArtifactDownloader
 import com.gav.borealis.install.BorealisInstallCoordinator
 import com.gav.borealis.security.SignedJobVerifier
 import com.thelightphone.sdk.SealedLightContext
+import com.thelightphone.sdk.auth.GooglePlayDiagnostics
 import com.thelightphone.sdk.auth.googlePlayCredentialStore
 import java.io.ByteArrayInputStream
 import java.util.Properties
@@ -44,15 +45,18 @@ class BorealisServices private constructor(
                     val store = BorealisStore(context.dataStore)
                     val downloader = PlayArtifactDownloader(context.filesDir)
                     val protectedStore = context.googlePlayCredentialStore()
-                    val google = PersonalPlayAuthProvider(object : PlayCredentialStore {
-                        override suspend fun read(): PersonalPlayCredential? =
-                            protectedStore.get()?.let { PersonalPlayCredential(it.email, it.token) }
+                    val google = PersonalPlayAuthProvider(
+                        store = object : PlayCredentialStore {
+                            override suspend fun read(): PersonalPlayCredential? =
+                                protectedStore.get()?.let { PersonalPlayCredential(it.email, it.token) }
 
-                        override suspend fun write(credential: PersonalPlayCredential) =
-                            protectedStore.put(credential.email, credential.token)
+                            override suspend fun write(credential: PersonalPlayCredential) =
+                                protectedStore.put(credential.email, credential.token)
 
-                        override suspend fun clear() = protectedStore.clear()
-                    })
+                            override suspend fun clear() = protectedStore.clear()
+                        },
+                        diagnostics = GooglePlayDiagnostics::record,
+                    )
                     val profileBytes = context.readAsset("gplayapi_px_9a.properties")
                     val play = GPlayDeliveryClient(
                         profileBytes = profileBytes,

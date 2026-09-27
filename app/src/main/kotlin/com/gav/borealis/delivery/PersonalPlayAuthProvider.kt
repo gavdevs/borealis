@@ -7,6 +7,8 @@ import com.aurora.gplayapi.data.providers.DeviceInfoProvider
 import com.aurora.gplayapi.exceptions.GooglePlayException
 import com.aurora.gplayapi.helpers.AuthHelper
 import com.aurora.gplayapi.network.IHttpClient
+import com.thelightphone.sdk.auth.GooglePlayDiagnosticOutcome
+import com.thelightphone.sdk.auth.GooglePlayDiagnosticStage
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -39,6 +41,8 @@ interface PlayCredentialStore {
 /** Carries only a safe, fixed message: do not attach upstream exceptions or response bodies. */
 class PersonalPlayAuthException(message: String) : IllegalStateException(message)
 
+typealias PlayAuthDiagnosticSink = (GooglePlayDiagnosticStage, GooglePlayDiagnosticOutcome, Int?) -> Unit
+
 /**
  * Experimental personal-account support using the same unofficial Android API as GPlayAPI.
  * This is not Google website OAuth. Only the native Google sign-in view supplies oauthToken.
@@ -47,25 +51,32 @@ class PersonalPlayAuthProvider internal constructor(
     private val store: PlayCredentialStore,
     private val exchange: (String, String, Properties, Locale) -> PersonalPlayCredential,
     private val build: (PersonalPlayCredential, Properties, Locale) -> AuthData,
+    private val diagnostics: PlayAuthDiagnosticSink = { _, _, _ -> },
 ) : PlayAuthProvider {
     constructor(
         store: PlayCredentialStore,
         httpClient: IHttpClient = PersonalPlayHttpClient(),
+        diagnostics: PlayAuthDiagnosticSink = { _, _, _ -> },
     ) : this(
         store,
         { email, token, properties, locale ->
-            exchangeGoogleSetupCredential(email, token, properties, locale, httpClient)
+            observePlayOperation(diagnostics, GooglePlayDiagnosticStage.ACCOUNT_EXCHANGE) { observation ->
+                exchangeGoogleSetupCredential(email, token, properties, locale, ObservedPlayHttpClient(httpClient, observation))
+            }
         },
         { credential, properties, locale ->
-            AuthHelper.using(httpClient).build(
-                email = credential.email,
-                token = credential.token,
-                tokenType = AuthHelper.Token.AAS,
-                isAnonymous = false,
-                properties = properties,
-                locale = locale,
-            )
+            observePlayOperation(diagnostics, GooglePlayDiagnosticStage.CHECK_IN) { observation ->
+                AuthHelper.using(ObservedPlayHttpClient(httpClient, observation)).build(
+                    email = credential.email,
+                    token = credential.token,
+                    tokenType = AuthHelper.Token.AAS,
+                    isAnonymous = false,
+                    properties = properties,
+                    locale = locale,
+                )
+            }
         },
+        diagnostics,
     )
 
     private val mutex = Mutex()
@@ -74,10 +85,13 @@ class PersonalPlayAuthProvider internal constructor(
         withContext(Dispatchers.IO) {
             mutex.withLock {
                 safePlayAuth {
-                    val credential = store.read()
+                    val credential = observeLocalStage(diagnostics, GooglePlayDiagnosticStage.SECURE_STORE) { store.read() }
                         ?: throw PersonalPlayAuthException("Connect Google Play on this phone first.")
                     validateCredential(credential)
-                    validateSession(build(credential, properties, locale), credential)
+                    val session = build(credential, properties, locale)
+                    observeLocalStage(diagnostics, GooglePlayDiagnosticStage.SESSION_VALIDATION) {
+                        validateSession(session, credential)
+                    }
                 }
             }
         }
@@ -95,9 +109,12 @@ class PersonalPlayAuthProvider internal constructor(
                 validateCredential(PersonalPlayCredential(normalizedEmail, oauthToken))
                 val credential = exchange(normalizedEmail, oauthToken, properties, locale)
                 validateCredential(credential)
-                val session = validateSession(build(credential, properties, locale), credential)
+                val built = build(credential, properties, locale)
+                val session = observeLocalStage(diagnostics, GooglePlayDiagnosticStage.SESSION_VALIDATION) {
+                    validateSession(built, credential)
+                }
                 currentCoroutineContext().ensureActive()
-                store.write(credential)
+                observeLocalStage(diagnostics, GooglePlayDiagnosticStage.SECURE_STORE) { store.write(credential) }
                 session
             }
         }
@@ -105,14 +122,148 @@ class PersonalPlayAuthProvider internal constructor(
 
     suspend fun isConnected(): Boolean = mutex.withLock {
         safePlayAuth {
-            val credential = store.read() ?: return@safePlayAuth false
+            val credential = observeLocalStage(diagnostics, GooglePlayDiagnosticStage.SECURE_STORE) { store.read() }
+                ?: return@safePlayAuth false
             validateCredential(credential)
             true
         }
     }
 
     /** Caller must also invalidate GPlayDeliveryClient's cached session and close the sign-in view. */
-    suspend fun disconnect() = mutex.withLock { safePlayAuth { store.clear() } }
+    suspend fun disconnect() = mutex.withLock {
+        safePlayAuth { observeLocalStage(diagnostics, GooglePlayDiagnosticStage.SECURE_STORE) { store.clear() } }
+    }
+}
+
+private fun emitDiagnostic(
+    sink: PlayAuthDiagnosticSink,
+    stage: GooglePlayDiagnosticStage,
+    outcome: GooglePlayDiagnosticOutcome,
+    code: Int? = null,
+) {
+    // Diagnostics are observational only, and cannot turn a working sign-in into a failure.
+    runCatching { sink(stage, outcome, code?.takeIf { it in 100..599 }) }
+}
+
+private inline fun <T> observeLocalStage(
+    noinline sink: PlayAuthDiagnosticSink,
+    stage: GooglePlayDiagnosticStage,
+    block: () -> T,
+): T {
+    emitDiagnostic(sink, stage, GooglePlayDiagnosticOutcome.STARTED)
+    return try {
+        block().also { emitDiagnostic(sink, stage, GooglePlayDiagnosticOutcome.SUCCEEDED) }
+    } catch (error: CancellationException) {
+        emitDiagnostic(sink, stage, GooglePlayDiagnosticOutcome.CANCELLED)
+        throw error
+    } catch (error: Exception) {
+        emitDiagnostic(
+            sink,
+            stage,
+            if (stage == GooglePlayDiagnosticStage.SECURE_STORE) GooglePlayDiagnosticOutcome.STORAGE_ERROR
+            else GooglePlayDiagnosticOutcome.RESPONSE_ERROR,
+        )
+        throw error
+    }
+}
+
+internal inline fun <T> observePlayOperation(
+    noinline sink: PlayAuthDiagnosticSink,
+    initialStage: GooglePlayDiagnosticStage,
+    block: (PlayOperationObservation) -> T,
+): T {
+    val observation = PlayOperationObservation(sink, initialStage)
+    return try {
+        block(observation)
+    } catch (error: Exception) {
+        observation.failedAfterRequest(error)
+        throw error
+    }
+}
+
+internal class PlayOperationObservation(
+    private val sink: PlayAuthDiagnosticSink,
+    private var stage: GooglePlayDiagnosticStage,
+) {
+    private var code: Int? = null
+    private var failureReported = false
+
+    fun request(nextStage: GooglePlayDiagnosticStage, block: () -> PlayResponse): PlayResponse {
+        stage = nextStage
+        code = null
+        failureReported = false
+        emitDiagnostic(sink, stage, GooglePlayDiagnosticOutcome.STARTED)
+        return try {
+            block().also { response ->
+                code = response.code.takeIf { it in 100..599 }
+                val successful = response.isSuccessful && response.code in 200..299
+                failureReported = !successful
+                emitDiagnostic(
+                    sink,
+                    stage,
+                    if (successful) GooglePlayDiagnosticOutcome.SUCCEEDED else GooglePlayDiagnosticOutcome.HTTP_ERROR,
+                    code,
+                )
+            }
+        } catch (error: Exception) {
+            failureReported = true
+            emitDiagnostic(
+                sink,
+                stage,
+                when (error) {
+                    is CancellationException -> GooglePlayDiagnosticOutcome.CANCELLED
+                    is IOException -> GooglePlayDiagnosticOutcome.NETWORK_ERROR
+                    else -> GooglePlayDiagnosticOutcome.INTERNAL_ERROR
+                },
+                code,
+            )
+            throw error
+        }
+    }
+
+    fun failedAfterRequest(error: Exception) {
+        if (failureReported) return
+        emitDiagnostic(
+            sink,
+            stage,
+            when (error) {
+                is CancellationException -> GooglePlayDiagnosticOutcome.CANCELLED
+                is PersonalPlayAuthException, is GooglePlayException, is IOException -> GooglePlayDiagnosticOutcome.RESPONSE_ERROR
+                else -> GooglePlayDiagnosticOutcome.INTERNAL_ERROR
+            },
+            code,
+        )
+        failureReported = true
+    }
+}
+
+/** Observes fixed request categories only; all original arguments and responses pass unchanged. */
+internal class ObservedPlayHttpClient(
+    private val delegate: IHttpClient,
+    private val observation: PlayOperationObservation,
+) : IHttpClient by delegate {
+    override fun post(url: String, headers: Map<String, String>, params: Map<String, String>): PlayResponse =
+        observation.request(stage(url, params["service"])) { delegate.post(url, headers, params) }
+
+    override fun post(url: String, headers: Map<String, String>, body: ByteArray): PlayResponse =
+        observation.request(stage(url)) { delegate.post(url, headers, body) }
+
+    override fun get(url: String, headers: Map<String, String>): PlayResponse =
+        observation.request(stage(url)) { delegate.get(url, headers) }
+
+    override fun get(url: String, headers: Map<String, String>, params: Map<String, String>): PlayResponse =
+        observation.request(stage(url)) { delegate.get(url, headers, params) }
+
+    override fun get(url: String, headers: Map<String, String>, paramString: String): PlayResponse =
+        observation.request(stage(url)) { delegate.get(url, headers, paramString) }
+
+    private fun stage(url: String, service: String? = null): GooglePlayDiagnosticStage = when (url.substringBefore('?')) {
+        GOOGLE_ANDROID_AUTH_URL -> if (service == "ac2dm") GooglePlayDiagnosticStage.ACCOUNT_EXCHANGE else GooglePlayDiagnosticStage.PLAY_TOKEN
+        "https://android.clients.google.com/checkin" -> GooglePlayDiagnosticStage.CHECK_IN
+        "https://android.clients.google.com/fdfe/uploadDeviceConfig" -> GooglePlayDiagnosticStage.DEVICE_CONFIG
+        "https://android.clients.google.com/fdfe/api/userProfile" -> GooglePlayDiagnosticStage.USER_PROFILE
+        else -> GooglePlayDiagnosticStage.SESSION_VALIDATION
+    }
 }
 
 private fun validateSession(session: AuthData, credential: PersonalPlayCredential): AuthData {

@@ -3,6 +3,10 @@ package com.gav.borealis.delivery
 import com.aurora.gplayapi.data.models.AuthData
 import com.aurora.gplayapi.data.models.PlayResponse
 import com.aurora.gplayapi.exceptions.GooglePlayException
+import com.aurora.gplayapi.AndroidCheckinResponse
+import com.aurora.gplayapi.network.IHttpClient
+import com.thelightphone.sdk.auth.GooglePlayDiagnosticOutcome
+import com.thelightphone.sdk.auth.GooglePlayDiagnosticStage
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.IOException
@@ -278,6 +282,239 @@ class PersonalPlayAuthProviderTest {
         assertTrue(oversized.disconnected)
     }
 
+    @Test
+    fun `diagnostics report actual account exchange status without response or account data`() {
+        listOf(400, 403).forEach { status ->
+            val trace = DiagnosticTrace()
+            val connection = FakeConnection(status, "Token=fake-secret\nEmail=$EMAIL".toByteArray())
+            val error = assertFailsWith<PersonalPlayAuthException> {
+                observePlayOperation(trace.sink, GooglePlayDiagnosticStage.ACCOUNT_EXCHANGE) { observation ->
+                    val client = ObservedPlayHttpClient(PersonalPlayHttpClient { connection }, observation)
+                    val response = client.post(
+                        AUTH_URL,
+                        mapOf("Authorization" to "fake-secret"),
+                        mapOf("service" to "ac2dm", "Email" to EMAIL, "Token" to "fake-secret"),
+                    )
+                    parseGoogleSetupExchange(response, EMAIL)
+                }
+            }
+            assertEquals(
+                if (status == 400) "Google Play sign-in could not be completed. Try signing in again."
+                else "Google rejected this Play sign-in. Try signing in again on the phone.",
+                error.message,
+            )
+            assertEquals(
+                listOf(
+                    DiagnosticEvent(GooglePlayDiagnosticStage.ACCOUNT_EXCHANGE, GooglePlayDiagnosticOutcome.STARTED),
+                    DiagnosticEvent(GooglePlayDiagnosticStage.ACCOUNT_EXCHANGE, GooglePlayDiagnosticOutcome.HTTP_ERROR, status),
+                ),
+                trace.events,
+            )
+            trace.assertNoSecrets()
+        }
+    }
+
+    @Test
+    fun `diagnostics distinguish check-in and device config HTTP failures`() {
+        listOf(
+            Triple("https://android.clients.google.com/checkin", GooglePlayDiagnosticStage.CHECK_IN, 400),
+            Triple("https://android.clients.google.com/fdfe/uploadDeviceConfig", GooglePlayDiagnosticStage.DEVICE_CONFIG, 403),
+        ).forEach { (url, stage, status) ->
+            val trace = DiagnosticTrace()
+            val failure = GooglePlayException.AuthException(status, "fake-secret")
+            val actual = assertFailsWith<GooglePlayException.AuthException> {
+                observePlayOperation(trace.sink, GooglePlayDiagnosticStage.CHECK_IN) { observation ->
+                    ObservedPlayHttpClient(PersonalPlayHttpClient { FakeConnection(status) }, observation)
+                        .post(url, emptyMap(), byteArrayOf(1, 2, 3))
+                    throw failure
+                }
+            }
+            assertSame(failure, actual)
+            assertEquals(
+                listOf(
+                    DiagnosticEvent(stage, GooglePlayDiagnosticOutcome.STARTED),
+                    DiagnosticEvent(stage, GooglePlayDiagnosticOutcome.HTTP_ERROR, status),
+                ),
+                trace.events,
+            )
+            trace.assertNoSecrets()
+        }
+    }
+
+    @Test
+    fun `protobuf decoding failure after HTTP success is diagnosed as response not network error`() {
+        val trace = DiagnosticTrace()
+        assertFailsWith<IOException> {
+            observePlayOperation(trace.sink, GooglePlayDiagnosticStage.CHECK_IN) { observation ->
+                val client = ObservedPlayHttpClient(
+                    PersonalPlayHttpClient { FakeConnection(body = byteArrayOf(0xff.toByte())) },
+                    observation,
+                )
+                val response = client.post("https://android.clients.google.com/checkin", emptyMap(), byteArrayOf())
+                AndroidCheckinResponse.parseFrom(response.responseBytes)
+            }
+        }
+        assertEquals(
+            listOf(
+                DiagnosticEvent(GooglePlayDiagnosticStage.CHECK_IN, GooglePlayDiagnosticOutcome.STARTED),
+                DiagnosticEvent(GooglePlayDiagnosticStage.CHECK_IN, GooglePlayDiagnosticOutcome.SUCCEEDED, 200),
+                DiagnosticEvent(GooglePlayDiagnosticStage.CHECK_IN, GooglePlayDiagnosticOutcome.RESPONSE_ERROR, 200),
+            ),
+            trace.events,
+        )
+        trace.assertNoSecrets()
+    }
+
+    @Test
+    fun `exchange response without reusable token keeps real HTTP status in diagnostics`() {
+        val trace = DiagnosticTrace()
+        assertFailsWith<PersonalPlayAuthException> {
+            observePlayOperation(trace.sink, GooglePlayDiagnosticStage.ACCOUNT_EXCHANGE) { observation ->
+                val client = ObservedPlayHttpClient(
+                    PersonalPlayHttpClient { FakeConnection(body = "Auth=fake-secret".toByteArray()) },
+                    observation,
+                )
+                parseGoogleSetupExchange(client.post(AUTH_URL, emptyMap(), mapOf("service" to "ac2dm")), EMAIL)
+            }
+        }
+        assertEquals(
+            DiagnosticEvent(GooglePlayDiagnosticStage.ACCOUNT_EXCHANGE, GooglePlayDiagnosticOutcome.RESPONSE_ERROR, 200),
+            trace.events.last(),
+        )
+        trace.assertNoSecrets()
+    }
+
+    @Test
+    fun `network diagnostics do not contain underlying exception metadata`() {
+        val trace = DiagnosticTrace()
+        assertFailsWith<IOException> {
+            observePlayOperation(trace.sink, GooglePlayDiagnosticStage.ACCOUNT_EXCHANGE) { observation ->
+                ObservedPlayHttpClient(
+                    PersonalPlayHttpClient { throw IOException("$EMAIL Token=fake-secret") },
+                    observation,
+                ).post(AUTH_URL, emptyMap(), mapOf("service" to "ac2dm"))
+            }
+        }
+        assertEquals(
+            listOf(
+                DiagnosticEvent(GooglePlayDiagnosticStage.ACCOUNT_EXCHANGE, GooglePlayDiagnosticOutcome.STARTED),
+                DiagnosticEvent(GooglePlayDiagnosticStage.ACCOUNT_EXCHANGE, GooglePlayDiagnosticOutcome.NETWORK_ERROR),
+            ),
+            trace.events,
+        )
+        trace.assertNoSecrets()
+    }
+
+    @Test
+    fun `secure save failures are distinguished from successful session validation`() = runTest {
+        val trace = DiagnosticTrace()
+        val store = object : PlayCredentialStore {
+            override suspend fun read(): PersonalPlayCredential? = null
+            override suspend fun write(credential: PersonalPlayCredential) { throw IOException("$EMAIL fake-secret") }
+            override suspend fun clear() = Unit
+        }
+        val provider = PersonalPlayAuthProvider(
+            store,
+            exchange = { _, _, _, _ -> PersonalPlayCredential(EMAIL, "fake-secret") },
+            build = { _, _, _ -> validSession() },
+            diagnostics = trace.sink,
+        )
+        val error = assertFailsWith<PersonalPlayAuthException> {
+            provider.completeSignIn(EMAIL, "fake-secret", Properties())
+        }
+        // Preserve the existing user-facing mapping; this patch adds only a diagnostic channel.
+        assertEquals("Could not reach Google Play. Check the connection and try again.", error.message)
+        assertEquals(
+            listOf(
+                DiagnosticEvent(GooglePlayDiagnosticStage.SESSION_VALIDATION, GooglePlayDiagnosticOutcome.STARTED),
+                DiagnosticEvent(GooglePlayDiagnosticStage.SESSION_VALIDATION, GooglePlayDiagnosticOutcome.SUCCEEDED),
+                DiagnosticEvent(GooglePlayDiagnosticStage.SECURE_STORE, GooglePlayDiagnosticOutcome.STARTED),
+                DiagnosticEvent(GooglePlayDiagnosticStage.SECURE_STORE, GooglePlayDiagnosticOutcome.STORAGE_ERROR),
+            ),
+            trace.events,
+        )
+        trace.assertNoSecrets()
+    }
+
+    @Test
+    fun `secure read failures report only fixed storage category`() = runTest {
+        val trace = DiagnosticTrace()
+        val store = object : PlayCredentialStore {
+            override suspend fun read(): PersonalPlayCredential? = throw IllegalStateException("fake-secret")
+            override suspend fun write(credential: PersonalPlayCredential) = Unit
+            override suspend fun clear() = Unit
+        }
+        val provider = PersonalPlayAuthProvider(
+            store,
+            exchange = { _, _, _, _ -> error("Not called") },
+            build = { _, _, _ -> error("Not called") },
+            diagnostics = trace.sink,
+        )
+        assertFailsWith<PersonalPlayAuthException> { provider.isConnected() }
+        assertEquals(
+            listOf(
+                DiagnosticEvent(GooglePlayDiagnosticStage.SECURE_STORE, GooglePlayDiagnosticOutcome.STARTED),
+                DiagnosticEvent(GooglePlayDiagnosticStage.SECURE_STORE, GooglePlayDiagnosticOutcome.STORAGE_ERROR),
+            ),
+            trace.events,
+        )
+        trace.assertNoSecrets()
+    }
+
+    @Test
+    fun `diagnostic observer preserves original HTTP request and response`() {
+        val trace = DiagnosticTrace()
+        val headers = mapOf("Authorization" to "fake-secret")
+        val params = mapOf("service" to "ac2dm", "Token" to "fake-secret", "Email" to EMAIL)
+        val expected = response("Token=fake-secret")
+        val delegate = object : IHttpClient by PersonalPlayHttpClient({ error("Not called") }) {
+            override fun post(url: String, actualHeaders: Map<String, String>, actualParams: Map<String, String>): PlayResponse {
+                assertEquals(AUTH_URL, url)
+                assertSame(headers, actualHeaders)
+                assertSame(params, actualParams)
+                return expected
+            }
+        }
+        val actual = observePlayOperation(trace.sink, GooglePlayDiagnosticStage.ACCOUNT_EXCHANGE) { observation ->
+            ObservedPlayHttpClient(delegate, observation).post(AUTH_URL, headers, params)
+        }
+        assertSame(expected, actual)
+        trace.assertNoSecrets()
+    }
+
+    @Test
+    fun `Play token and profile requests get distinct diagnostic stages`() {
+        val trace = DiagnosticTrace()
+        observePlayOperation(trace.sink, GooglePlayDiagnosticStage.CHECK_IN) { observation ->
+            val client = ObservedPlayHttpClient(PersonalPlayHttpClient { FakeConnection() }, observation)
+            client.post(AUTH_URL, emptyMap(), mapOf("service" to "oauth2:https://www.googleapis.com/auth/googleplay"))
+            client.get("https://android.clients.google.com/fdfe/api/userProfile", emptyMap(), emptyMap())
+        }
+        assertEquals(
+            listOf(
+                DiagnosticEvent(GooglePlayDiagnosticStage.PLAY_TOKEN, GooglePlayDiagnosticOutcome.STARTED),
+                DiagnosticEvent(GooglePlayDiagnosticStage.PLAY_TOKEN, GooglePlayDiagnosticOutcome.SUCCEEDED, 200),
+                DiagnosticEvent(GooglePlayDiagnosticStage.USER_PROFILE, GooglePlayDiagnosticOutcome.STARTED),
+                DiagnosticEvent(GooglePlayDiagnosticStage.USER_PROFILE, GooglePlayDiagnosticOutcome.SUCCEEDED, 200),
+            ),
+            trace.events,
+        )
+        trace.assertNoSecrets()
+    }
+
+    @Test
+    fun `diagnostic sink failures cannot change successful sign-in`() = runTest {
+        val store = MemoryCredentialStore()
+        val provider = PersonalPlayAuthProvider(
+            store,
+            exchange = { _, _, _, _ -> PersonalPlayCredential(EMAIL, "fake-secret") },
+            build = { _, _, _ -> validSession() },
+            diagnostics = { _, _, _ -> throw IllegalStateException("Diagnostic recorder unavailable") },
+        )
+        assertEquals(EMAIL, provider.completeSignIn(EMAIL, "fake-secret", Properties()).email)
+        assertTrue(provider.isConnected())
+    }
+
     private fun provider(store: PlayCredentialStore, build: () -> AuthData) = PersonalPlayAuthProvider(
         store,
         exchange = { _, _, _, _ -> PersonalPlayCredential(EMAIL, "fake-aas") },
@@ -316,6 +553,23 @@ class PersonalPlayAuthProviderTest {
     private companion object {
         const val EMAIL = "person@example.test"
         const val AUTH_URL = "https://android.clients.google.com/auth"
+    }
+}
+
+private data class DiagnosticEvent(
+    val stage: GooglePlayDiagnosticStage,
+    val outcome: GooglePlayDiagnosticOutcome,
+    val code: Int? = null,
+)
+
+private class DiagnosticTrace {
+    val events = mutableListOf<DiagnosticEvent>()
+    val sink: PlayAuthDiagnosticSink = { stage, outcome, code -> events.add(DiagnosticEvent(stage, outcome, code)) }
+
+    fun assertNoSecrets() {
+        val rendered = events.toString()
+        listOf("fake-secret", "person@example.test", "https://", "IOException", "AuthException")
+            .forEach { assertFalse(rendered.contains(it)) }
     }
 }
 

@@ -33,6 +33,13 @@ authentication form fields stay out of request URLs. Disconnect removes protecte
 credentials and invalidates Borealis's in-memory Play authentication; it is not a
 Google-side token revocation.
 
+Phone diagnostics use the `BorealisGoogle` log tag with fixed stage/outcome labels
+and bounded numeric error/status codes. They distinguish screen lifecycle, WebView
+page loading, account exchange, device check-in/configuration, Play authorization,
+session validation, and protected storage. They never log account identifiers,
+passwords, tokens, URLs, request/response bodies, or exception text. A successful
+WebView page event means only that a page loaded, not that Play sign-in succeeded.
+
 After pairing, users open `SIGN IN` and enter their Google credentials directly
 on Google's page in Borealis so it can download and update approved apps from
 Google Play. No separately installed browser is required. Google account challenges

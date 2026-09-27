@@ -17,6 +17,9 @@ import com.thelightphone.sdk.LightScreen
 import com.thelightphone.sdk.LightViewModel
 import com.thelightphone.sdk.SealedLightActivity
 import com.thelightphone.sdk.auth.GooglePlaySignIn
+import com.thelightphone.sdk.auth.GooglePlayDiagnostics
+import com.thelightphone.sdk.auth.GooglePlayDiagnosticStage
+import com.thelightphone.sdk.auth.GooglePlayDiagnosticOutcome
 import com.thelightphone.sdk.ui.LightBarButton
 import com.thelightphone.sdk.ui.LightBottomBar
 import com.thelightphone.sdk.ui.LightScrollView
@@ -75,7 +78,11 @@ class BorealisGoogleViewModel(private val services: BorealisServices) : LightVie
     }
 
     fun begin() {
-        if (state.value.loading) return
+        if (state.value.loading) {
+            GooglePlayDiagnostics.record(GooglePlayDiagnosticStage.SIGN_IN_SCREEN, GooglePlayDiagnosticOutcome.WAITING)
+            return
+        }
+        GooglePlayDiagnostics.record(GooglePlayDiagnosticStage.SIGN_IN_SCREEN, GooglePlayDiagnosticOutcome.STARTED)
         state.update { it.copy(signingIn = true, message = null) }
     }
 
@@ -137,9 +144,18 @@ class BorealisGoogleScreen(sealedActivity: SealedLightActivity) :
     override val viewModelClass = BorealisGoogleViewModel::class.java
     override fun createViewModel() = BorealisGoogleViewModel(BorealisServices.from(lightContext))
 
-    override fun onAppPause() { viewModel.cancel() }
-    override fun willHide() { viewModel.cancel() }
-    override fun willShow() { viewModel.refresh() }
+    override fun onAppPause() {
+        GooglePlayDiagnostics.record(GooglePlayDiagnosticStage.SIGN_IN_SCREEN, GooglePlayDiagnosticOutcome.PAUSED)
+        viewModel.cancel()
+    }
+    override fun willHide() {
+        GooglePlayDiagnostics.record(GooglePlayDiagnosticStage.SIGN_IN_SCREEN, GooglePlayDiagnosticOutcome.HIDDEN)
+        viewModel.cancel()
+    }
+    override fun willShow() {
+        GooglePlayDiagnostics.record(GooglePlayDiagnosticStage.SIGN_IN_SCREEN, GooglePlayDiagnosticOutcome.SHOWN)
+        viewModel.refresh()
+    }
 
     @Composable
     override fun Content() {

@@ -62,7 +62,8 @@ app state. See [Android's signing guidance](https://developer.android.com/studio
 1. Review and commit the intended release changes on `main`. Set the semantic
    `versionName` and a strictly increasing `versionCode` in `app/lighttool.toml`
    before each new release tag. The current candidate is `0.1.4`, version code
-   `5`, with plain-language phone sign-in instructions and a `SIGN IN` entry button.
+   `5`, with plain-language phone sign-in instructions, a `SIGN IN` entry button,
+   and credential-free sign-in diagnostics.
    Never move a failed tag onto fixed source.
 2. Push `main` and wait for CI to pass on that exact commit. The release workflow
    checks main-branch ancestry but does not itself require a successful CI run.

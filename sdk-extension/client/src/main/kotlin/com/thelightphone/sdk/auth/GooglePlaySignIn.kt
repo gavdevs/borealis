@@ -60,14 +60,17 @@ fun SealedLightContext.GooglePlaySignIn(
     }
     LaunchedEffect(session) {
         delay(5 * 60 * 1_000L)
-        session.fail("Google sign-in timed out. Try again.")
+        session.fail("Google sign-in timed out. Try again.", GooglePlayDiagnosticOutcome.TIMED_OUT)
     }
     DisposableEffect(session, owner, window) {
         val wasSecure = window?.attributes?.flags?.and(WindowManager.LayoutParams.FLAG_SECURE) != 0
         window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_STOP) {
-                session.fail("Google sign-in was closed when Borealis left the foreground. Try again.")
+                session.fail(
+                    "Google sign-in was closed when Borealis left the foreground. Try again.",
+                    GooglePlayDiagnosticOutcome.CANCELLED,
+                )
             }
         }
         owner.lifecycle.addObserver(observer)
@@ -92,6 +95,7 @@ private class GooglePlayWebSession(
     private var readingGeneration: Long? = null
 
     fun createView(): WebView {
+        GooglePlayDiagnostics.record(GooglePlayDiagnosticStage.WEBVIEW, GooglePlayDiagnosticOutcome.STARTED)
         WebView.setWebContentsDebuggingEnabled(false)
         return WebView(context).also { browser ->
             view = browser
@@ -140,7 +144,7 @@ private class GooglePlayWebSession(
                 }
             }
             browser.setDownloadListener { _, _, _, _, _ ->
-                fail("Downloads are not available during Google sign-in.")
+                fail("Downloads are not available during Google sign-in.", GooglePlayDiagnosticOutcome.NAVIGATION_BLOCKED)
             }
             browser.webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(
@@ -149,14 +153,20 @@ private class GooglePlayWebSession(
                     if (ended.get()) return true
                     if (!request.isForMainFrame) return !isHttpsResource(request.url.toString())
                     if (isGoogleAccountsUrl(request.url.toString())) return false
-                    fail("Google sign-in requested an unsupported page. Sign-in was closed.")
+                    fail(
+                        "Google sign-in requested an unsupported page. Sign-in was closed.",
+                        GooglePlayDiagnosticOutcome.NAVIGATION_BLOCKED,
+                    )
                     return true
                 }
 
                 @Suppress("DEPRECATION")
                 override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean {
                     if (!ended.get() && isGoogleAccountsUrl(url)) return false
-                    fail("Google sign-in requested an unsupported page. Sign-in was closed.")
+                    fail(
+                        "Google sign-in requested an unsupported page. Sign-in was closed.",
+                        GooglePlayDiagnosticOutcome.NAVIGATION_BLOCKED,
+                    )
                     return true
                 }
 
@@ -166,7 +176,12 @@ private class GooglePlayWebSession(
                     val url = request.url.toString()
                     val invalidMainFrame = request.isForMainFrame && !isGoogleAccountsUrl(url)
                     if (invalidMainFrame) {
-                        view.post { fail("Google sign-in requested an unsupported page. Sign-in was closed.") }
+                        view.post {
+                            fail(
+                                "Google sign-in requested an unsupported page. Sign-in was closed.",
+                                GooglePlayDiagnosticOutcome.NAVIGATION_BLOCKED,
+                            )
+                        }
                     }
                     return if (ended.get() || invalidMainFrame || !isHttpsResource(url)) {
                         WebResourceResponse("text/plain", "UTF-8", ByteArrayInputStream(byteArrayOf()))
@@ -176,7 +191,14 @@ private class GooglePlayWebSession(
                 override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
                     navigationGeneration += 1
                     if (!isGoogleAccountsUrl(url)) {
-                        fail("Google sign-in left the permitted account page. Sign-in was closed.")
+                        fail(
+                            "Google sign-in left the permitted account page. Sign-in was closed.",
+                            GooglePlayDiagnosticOutcome.NAVIGATION_BLOCKED,
+                        )
+                    } else if (navigationGeneration > 1) {
+                        GooglePlayDiagnostics.record(
+                            GooglePlayDiagnosticStage.WEBVIEW_PAGE, GooglePlayDiagnosticOutcome.STARTED,
+                        )
                     }
                 }
 
@@ -184,6 +206,9 @@ private class GooglePlayWebSession(
                     if (ended.get() || readingGeneration == navigationGeneration ||
                         !isGoogleAccountsUrl(url) || view.url != url
                     ) return
+                    GooglePlayDiagnostics.record(
+                        GooglePlayDiagnosticStage.WEBVIEW_PAGE, GooglePlayDiagnosticOutcome.SUCCEEDED,
+                    )
                     val token = extractGoogleOauthCookie(
                         CookieManager.getInstance().getCookie(url),
                     ) ?: return
@@ -201,7 +226,12 @@ private class GooglePlayWebSession(
                         val email = extractGoogleProfileEmail(result) ?: return@evaluateJavascript
                         if (ended.compareAndSet(false, true)) {
                             cleanUp {
-                                if (!disposed) onCredential(GooglePlaySignInCredential(email, token))
+                                if (!disposed) {
+                                    GooglePlayDiagnostics.record(
+                                        GooglePlayDiagnosticStage.WEBVIEW, GooglePlayDiagnosticOutcome.SUCCEEDED,
+                                    )
+                                    onCredential(GooglePlaySignInCredential(email, token))
+                                }
                             }
                         }
                     }
@@ -209,28 +239,44 @@ private class GooglePlayWebSession(
 
                 override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler, error: SslError?) {
                     handler.cancel()
-                    fail("Google sign-in could not establish a secure connection.")
+                    fail(
+                        "Google sign-in could not establish a secure connection.",
+                        GooglePlayDiagnosticOutcome.NETWORK_ERROR,
+                        error?.primaryError,
+                    )
                 }
 
                 override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
-                    if (request.isForMainFrame) fail("Google sign-in could not load. Check your connection and try again.")
+                    if (request.isForMainFrame) fail(
+                        "Google sign-in could not load. Check your connection and try again.",
+                        GooglePlayDiagnosticOutcome.NETWORK_ERROR,
+                        error.errorCode,
+                    )
                 }
 
                 override fun onReceivedHttpError(
                     view: WebView, request: WebResourceRequest, errorResponse: WebResourceResponse,
                 ) {
-                    if (request.isForMainFrame) fail("Google sign-in was refused or unavailable. Try again later.")
+                    if (request.isForMainFrame) fail(
+                        "Google sign-in was refused or unavailable. Try again later.",
+                        GooglePlayDiagnosticOutcome.HTTP_ERROR,
+                        errorResponse.statusCode,
+                    )
                 }
 
                 override fun onSafeBrowsingHit(
                     view: WebView?, request: WebResourceRequest?, threatType: Int, callback: SafeBrowsingResponse,
                 ) {
                     callback.backToSafety(false)
-                    fail("Google sign-in was blocked by Safe Browsing.")
+                    fail(
+                        "Google sign-in was blocked by Safe Browsing.",
+                        GooglePlayDiagnosticOutcome.NAVIGATION_BLOCKED,
+                        threatType,
+                    )
                 }
 
                 override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
-                    fail("Google sign-in stopped unexpectedly. Try again.")
+                    fail("Google sign-in stopped unexpectedly. Try again.", GooglePlayDiagnosticOutcome.RENDERER_GONE)
                     return true
                 }
             }
@@ -240,18 +286,29 @@ private class GooglePlayWebSession(
             WebStorage.getInstance().deleteAllData()
             cookies.removeAllCookies {
                 cookies.flush()
-                if (!ended.get() && !disposed) browser.loadUrl(GOOGLE_PLAY_SIGN_IN_URL)
+                if (!ended.get() && !disposed) {
+                    GooglePlayDiagnostics.record(
+                        GooglePlayDiagnosticStage.WEBVIEW_PAGE, GooglePlayDiagnosticOutcome.STARTED,
+                    )
+                    browser.loadUrl(GOOGLE_PLAY_SIGN_IN_URL)
+                }
             }
         }
     }
 
-    fun fail(message: String) {
-        if (ended.compareAndSet(false, true)) cleanUp { if (!disposed) onError(message) }
+    fun fail(message: String, outcome: GooglePlayDiagnosticOutcome, code: Int? = null) {
+        if (ended.compareAndSet(false, true)) {
+            GooglePlayDiagnostics.record(GooglePlayDiagnosticStage.WEBVIEW, outcome, code)
+            cleanUp { if (!disposed) onError(message) }
+        }
     }
 
     fun close() {
         disposed = true
-        if (ended.compareAndSet(false, true)) cleanUp()
+        if (ended.compareAndSet(false, true)) {
+            GooglePlayDiagnostics.record(GooglePlayDiagnosticStage.WEBVIEW, GooglePlayDiagnosticOutcome.CANCELLED)
+            cleanUp()
+        }
     }
 
     private fun cleanUp(afterCookiesCleared: () -> Unit = {}) {
