@@ -70,10 +70,14 @@ app state. See [Android's signing guidance](https://developer.android.com/studio
 1. Review and commit the intended release changes on `main`. Set the semantic
    `versionName` and a strictly increasing `versionCode` in `app/lighttool.toml`
    before each new release tag, including prereleases. The current fast candidate
-   is `0.1.6-alpha.2`, version code `8`. Its authentication, HTTP transport, and
-   device profile deliberately remain unchanged from v0.1.5; disabling release
-   optimization is a controlled comparison for the still-observed device-config
-   HTTP 400, not a claimed fix. Never move a failed tag onto fixed source.
+   is `0.1.6-alpha.3`, version code `9`. It replaces the URLConnection adapter
+   with OkHttp 5.3.2 (already bundled through GPlayAPI), using Aurora/GPlayAPI's
+   raw-byte request construction without an invented protobuf Content-Type.
+   Authentication order, device profile, and phone-only sign-in remain unchanged.
+   Auth parameters stay in the POST body; credential logging and redirects stay
+   disabled. Alpha.2 reproduced device-config HTTP 400 with optimization disabled;
+   alpha.3 tests the transport difference, not a proven fix. Never move a failed
+   tag onto fixed source.
 2. Push the reviewed commit to `main`. For stable release candidates, wait for
    full CI to pass on that exact commit. A testing prerelease can start as soon
    as the commit is on `main`: its release workflow independently runs the
@@ -84,15 +88,15 @@ app state. See [Android's signing guidance](https://developer.android.com/studio
    commit. For the current candidate, after confirming `HEAD` is that commit:
 
    ```sh
-   git tag -a v0.1.6-alpha.2 -m "Borealis v0.1.6-alpha.2"
-   git push origin refs/tags/v0.1.6-alpha.2
+   git tag -a v0.1.6-alpha.3 -m "Borealis v0.1.6-alpha.3"
+   git push origin refs/tags/v0.1.6-alpha.3
    ```
 
    The tag push starts `Android release` on GitHub-hosted runners. A manual
    run can retry the same existing tag if no release for it exists:
 
    ```sh
-   gh workflow run release.yml --ref main -f tag=v0.1.6-alpha.2
+   gh workflow run release.yml --ref main -f tag=v0.1.6-alpha.3
    ```
 
 4. Download the resulting private prerelease (or stable draft) and verify the APK

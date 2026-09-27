@@ -46,6 +46,21 @@ release assets as `LICENSE.tink`. Keep it and these notices with redistributed
 binaries. The exact resolved Tink JAR and its SHA-256 are recorded in
 `runtime-dependencies.tsv`.
 
+## Square OkHttp
+
+Borealis directly uses `com.squareup.okhttp3:okhttp:5.3.2` for its credential-safe
+Play HTTP adapter. This is the same version already resolved through GPlayAPI;
+the adapter follows its raw request-body construction without copying URL logging.
+
+- Project and version: https://github.com/square/okhttp/tree/parent-5.3.2
+- License: Apache License, Version 2.0
+- Upstream license: https://github.com/square/okhttp/blob/parent-5.3.2/LICENSE.txt
+
+The Apache 2.0 license text is already included at `licenses/LICENSE.tink` and in
+release assets as `LICENSE.tink`; that text also covers this Apache-licensed
+dependency. The resolved OkHttp Android artifact and its SHA-256 are recorded in
+`runtime-dependencies.tsv`.
+
 ## Names and services
 
 Borealis is an independent, unsupported project. It is not affiliated with or endorsed by Light, Aurora OSS, or Google. Google Play and Android are trademarks of their respective owners.

@@ -1,8 +1,8 @@
 [tool]
 id = "com.gav.borealis"
 label = "Borealis"
-versionCode = 8
-versionName = "0.1.6-alpha.2"
+versionCode = 9
+versionName = "0.1.6-alpha.3"
 permissions = ["android.permission.INTERNET", "android.permission.ACCESS_NETWORK_STATE", "android.permission.WAKE_LOCK"]
 capabilities = ["package-install-request"]
 serverPackage = "com.lightos"

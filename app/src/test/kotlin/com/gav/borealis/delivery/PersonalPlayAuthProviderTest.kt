@@ -7,12 +7,7 @@ import com.aurora.gplayapi.AndroidCheckinResponse
 import com.aurora.gplayapi.network.IHttpClient
 import com.thelightphone.sdk.auth.GooglePlayDiagnosticOutcome
 import com.thelightphone.sdk.auth.GooglePlayDiagnosticStage
-import java.io.ByteArrayInputStream
-import java.io.ByteArrayOutputStream
 import java.io.IOException
-import java.net.HttpURLConnection
-import java.net.URI
-import java.net.URL
 import java.util.Locale
 import java.util.Properties
 import java.util.concurrent.CountDownLatch
@@ -220,81 +215,78 @@ class PersonalPlayAuthProviderTest {
 
     @Test
     fun `Google auth parameters go in form body never request URL`() {
-        val connection = FakeConnection()
-        var opened: URI? = null
-        val client = PersonalPlayHttpClient { uri -> opened = uri; connection }
+        val calls = FakePlayCalls()
+        val client = PersonalPlayHttpClient(calls)
 
         client.post(AUTH_URL, emptyMap(), mapOf("Email" to EMAIL, "Token" to "fake+a=b", "service" to "ac2dm"))
 
-        assertEquals(AUTH_URL, opened.toString())
-        assertNull(opened!!.rawQuery)
-        assertEquals("Email=person%40example.test&Token=fake%2Ba%3Db&service=ac2dm", connection.output.toString("UTF-8"))
-        assertEquals("application/x-www-form-urlencoded; charset=UTF-8", connection.getRequestProperty("Content-Type"))
+        val request = calls.requests.single()
+        assertEquals(AUTH_URL, request.url.toString())
+        assertNull(request.url.query)
+        assertEquals("Email=person%40example.test&Token=fake%2Ba%3Db&service=ac2dm", requestBodyBytes(request).toString(Charsets.UTF_8))
         assertEquals(
             listOf("application/x-www-form-urlencoded; charset=UTF-8"),
-            connection.requestProperties.filterKeys { it.equals("Content-Type", ignoreCase = true) }.values.flatten(),
+            request.headers.values("Content-Type"),
         )
-        assertEquals("POST", connection.requestMethod)
-        assertFalse(connection.instanceFollowRedirects)
-        assertFalse(connection.useCaches)
-        assertTrue(connection.disconnected)
+        assertEquals("POST", request.method)
+        assertTrue(calls.responseBody.closed)
     }
 
     @Test
-    fun `raw device configuration upload explicitly labels unchanged protobuf bytes`() {
-        val connection = FakeConnection()
-        var opened: URI? = null
-        val client = PersonalPlayHttpClient { uri -> opened = uri; connection }
+    fun `raw device configuration upload matches Aurora without inferring a media type`() {
+        val calls = FakePlayCalls()
+        val client = PersonalPlayHttpClient(calls)
         val headers = mapOf("Accept" to "application/x-protobuf")
         val protobuf = byteArrayOf(0x0a, 0x05, 0x08, 0x80.toByte(), 0x01, 0x10, 0x00)
 
         client.post("https://android.clients.google.com/fdfe/uploadDeviceConfig", headers, protobuf)
 
-        assertEquals("/fdfe/uploadDeviceConfig", opened!!.path)
-        assertEquals("application/x-protobuffer", connection.getRequestProperty("Content-Type"))
-        assertEquals("application/x-protobuf", connection.getRequestProperty("Accept"))
-        assertContentEquals(protobuf, connection.output.toByteArray())
-        assertEquals("POST", connection.requestMethod)
+        val request = calls.requests.single()
+        assertEquals("/fdfe/uploadDeviceConfig", request.url.encodedPath)
+        assertNull(request.header("Content-Type"))
+        assertNull(request.body!!.contentType())
+        assertEquals(protobuf.size.toLong(), request.body!!.contentLength())
+        assertEquals("application/x-protobuf", request.header("Accept"))
+        assertContentEquals(protobuf, requestBodyBytes(request))
+        assertEquals("POST", request.method)
         assertEquals(mapOf("Accept" to "application/x-protobuf"), headers)
     }
 
     @Test
     fun `raw protobuf upload preserves explicit content type regardless of header casing`() {
         listOf("Content-Type", "content-type", "cOnTeNt-TyPe").forEach { headerName ->
-            val connection = FakeConnection()
-            val client = PersonalPlayHttpClient { connection }
+            val calls = FakePlayCalls()
+            val client = PersonalPlayHttpClient(calls)
             val explicitType = "application/x-protobuf; charset=binary"
             val protobuf = byteArrayOf(0x0a, 0x02, 0x08, 0xff.toByte())
             val headers = mapOf(headerName to explicitType)
 
             client.post("https://android.clients.google.com/fdfe/uploadDeviceConfig", headers, protobuf)
 
-            val contentTypeHeaders = connection.requestProperties
-                .filterKeys { it.equals("Content-Type", ignoreCase = true) }
-            assertEquals(setOf(headerName), contentTypeHeaders.keys)
-            assertEquals(listOf(explicitType), contentTypeHeaders.values.flatten())
-            assertContentEquals(protobuf, connection.output.toByteArray())
+            val request = calls.requests.single()
+            assertEquals(listOf(explicitType), request.headers.values("Content-Type"))
+            assertContentEquals(protobuf, requestBodyBytes(request))
             assertEquals(mapOf(headerName to explicitType), headers)
         }
     }
 
     @Test
     fun `GET requests do not acquire a protobuf request content type`() {
-        val connection = FakeConnection()
-        val client = PersonalPlayHttpClient { connection }
+        val calls = FakePlayCalls()
+        val client = PersonalPlayHttpClient(calls)
 
         client.get("https://android.clients.google.com/fdfe/api/userProfile", emptyMap())
 
-        assertEquals("GET", connection.requestMethod)
-        assertTrue(connection.requestProperties.keys.none { it.equals("Content-Type", ignoreCase = true) })
-        assertFalse(connection.doOutput)
-        assertContentEquals(byteArrayOf(), connection.output.toByteArray())
+        val request = calls.requests.single()
+        assertEquals("GET", request.method)
+        assertNull(request.header("Content-Type"))
+        assertNull(request.body)
     }
 
     @Test
     fun `transport rejects credential-bearing URLs and unexpected endpoints before connecting`() {
-        var opened = false
-        val client = PersonalPlayHttpClient { opened = true; FakeConnection() }
+        val calls = FakePlayCalls()
+        val client = PersonalPlayHttpClient(calls)
         listOf(
             "http://android.clients.google.com/auth",
             "https://android.clients.google.com.evil.test/auth",
@@ -307,44 +299,45 @@ class PersonalPlayAuthProviderTest {
             assertFailsWith<IOException> { client.post(url, emptyMap(), byteArrayOf()) }
         }
         assertFailsWith<IOException> { client.get(AUTH_URL, emptyMap()) }
-        assertFalse(opened)
+        assertTrue(calls.requests.isEmpty())
     }
 
     @Test
     fun `redirects and raw HTTP errors never expose response bodies`() {
         listOf(302, 403, 429).forEach { code ->
-            val connection = FakeConnection(code, "Token=fake-secret".toByteArray())
-            val response = PersonalPlayHttpClient { connection }.post(AUTH_URL, emptyMap(), byteArrayOf())
+            val calls = FakePlayCalls(code, "Token=fake-secret".toByteArray())
+            val response = PersonalPlayHttpClient(calls).post(AUTH_URL, emptyMap(), byteArrayOf())
             assertFalse(response.isSuccessful)
             assertEquals(code, response.code)
             assertContentEquals(byteArrayOf(), response.responseBytes)
             assertFalse(response.errorString.contains("fake-secret"))
-            assertFalse(connection.inputRead)
+            assertFalse(calls.responseBody.read)
+            assertTrue(calls.responseBody.closed)
         }
     }
 
     @Test
     fun `transport strips underlying exception messages and bounds auth responses`() {
-        val failing = PersonalPlayHttpClient { throw IOException("https://example.test/?Token=fake-secret") }
+        val failing = PersonalPlayHttpClient(FakePlayCalls(failure = IOException("https://example.test/?Token=fake-secret")))
         val failure = assertFailsWith<IOException> { failing.post(AUTH_URL, emptyMap(), byteArrayOf()) }
         assertFalse(failure.toString().contains("fake-secret"))
         assertNull(failure.cause)
 
-        val oversized = FakeConnection(body = ByteArray(65_537))
+        val oversized = FakePlayCalls(body = ByteArray(65_537))
         assertFailsWith<IOException> {
-            PersonalPlayHttpClient { oversized }.post(AUTH_URL, emptyMap(), byteArrayOf())
+            PersonalPlayHttpClient(oversized).post(AUTH_URL, emptyMap(), byteArrayOf())
         }
-        assertTrue(oversized.disconnected)
+        assertTrue(oversized.responseBody.closed)
     }
 
     @Test
     fun `diagnostics report actual account exchange status without response or account data`() {
         listOf(400, 403).forEach { status ->
             val trace = DiagnosticTrace()
-            val connection = FakeConnection(status, "Token=fake-secret\nEmail=$EMAIL".toByteArray())
+            val calls = FakePlayCalls(status, "Token=fake-secret\nEmail=$EMAIL".toByteArray())
             val error = assertFailsWith<PersonalPlayAuthException> {
                 observePlayOperation(trace.sink, GooglePlayDiagnosticStage.ACCOUNT_EXCHANGE) { observation ->
-                    val client = ObservedPlayHttpClient(PersonalPlayHttpClient { connection }, observation)
+                    val client = ObservedPlayHttpClient(PersonalPlayHttpClient(calls), observation)
                     val response = client.post(
                         AUTH_URL,
                         mapOf("Authorization" to "fake-secret"),
@@ -379,7 +372,7 @@ class PersonalPlayAuthProviderTest {
             val failure = GooglePlayException.AuthException(status, "fake-secret")
             val actual = assertFailsWith<GooglePlayException.AuthException> {
                 observePlayOperation(trace.sink, GooglePlayDiagnosticStage.CHECK_IN) { observation ->
-                    ObservedPlayHttpClient(PersonalPlayHttpClient { FakeConnection(status) }, observation)
+                    ObservedPlayHttpClient(PersonalPlayHttpClient(FakePlayCalls(status)), observation)
                         .post(url, emptyMap(), byteArrayOf(1, 2, 3))
                     throw failure
                 }
@@ -402,7 +395,7 @@ class PersonalPlayAuthProviderTest {
         assertFailsWith<IOException> {
             observePlayOperation(trace.sink, GooglePlayDiagnosticStage.CHECK_IN) { observation ->
                 val client = ObservedPlayHttpClient(
-                    PersonalPlayHttpClient { FakeConnection(body = byteArrayOf(0xff.toByte())) },
+                    PersonalPlayHttpClient(FakePlayCalls(body = byteArrayOf(0xff.toByte()))),
                     observation,
                 )
                 val response = client.post("https://android.clients.google.com/checkin", emptyMap(), byteArrayOf())
@@ -426,7 +419,7 @@ class PersonalPlayAuthProviderTest {
         assertFailsWith<PersonalPlayAuthException> {
             observePlayOperation(trace.sink, GooglePlayDiagnosticStage.ACCOUNT_EXCHANGE) { observation ->
                 val client = ObservedPlayHttpClient(
-                    PersonalPlayHttpClient { FakeConnection(body = "Auth=fake-secret".toByteArray()) },
+                    PersonalPlayHttpClient(FakePlayCalls(body = "Auth=fake-secret".toByteArray())),
                     observation,
                 )
                 parseGoogleSetupExchange(client.post(AUTH_URL, emptyMap(), mapOf("service" to "ac2dm")), EMAIL)
@@ -445,7 +438,7 @@ class PersonalPlayAuthProviderTest {
         assertFailsWith<IOException> {
             observePlayOperation(trace.sink, GooglePlayDiagnosticStage.ACCOUNT_EXCHANGE) { observation ->
                 ObservedPlayHttpClient(
-                    PersonalPlayHttpClient { throw IOException("$EMAIL Token=fake-secret") },
+                    PersonalPlayHttpClient(FakePlayCalls(failure = IOException("$EMAIL Token=fake-secret"))),
                     observation,
                 ).post(AUTH_URL, emptyMap(), mapOf("service" to "ac2dm"))
             }
@@ -522,7 +515,7 @@ class PersonalPlayAuthProviderTest {
         val headers = mapOf("Authorization" to "fake-secret")
         val params = mapOf("service" to "ac2dm", "Token" to "fake-secret", "Email" to EMAIL)
         val expected = response("Token=fake-secret")
-        val delegate = object : IHttpClient by PersonalPlayHttpClient({ error("Not called") }) {
+        val delegate = object : IHttpClient by PersonalPlayHttpClient(FakePlayCalls(failure = IOException("Not called"))) {
             override fun post(url: String, actualHeaders: Map<String, String>, actualParams: Map<String, String>): PlayResponse {
                 assertEquals(AUTH_URL, url)
                 assertSame(headers, actualHeaders)
@@ -541,7 +534,7 @@ class PersonalPlayAuthProviderTest {
     fun `Play token and profile requests get distinct diagnostic stages`() {
         val trace = DiagnosticTrace()
         observePlayOperation(trace.sink, GooglePlayDiagnosticStage.CHECK_IN) { observation ->
-            val client = ObservedPlayHttpClient(PersonalPlayHttpClient { FakeConnection() }, observation)
+            val client = ObservedPlayHttpClient(PersonalPlayHttpClient(FakePlayCalls()), observation)
             client.post(AUTH_URL, emptyMap(), mapOf("service" to "oauth2:https://www.googleapis.com/auth/googleplay"))
             client.get("https://android.clients.google.com/fdfe/api/userProfile", emptyMap(), emptyMap())
         }
@@ -633,20 +626,4 @@ private class MemoryCredentialStore(var value: PersonalPlayCredential? = null) :
     override suspend fun read(): PersonalPlayCredential? = value
     override suspend fun write(credential: PersonalPlayCredential) { value = credential; writes++ }
     override suspend fun clear() { value = null }
-}
-
-private class FakeConnection(
-    private val status: Int = 200,
-    private val body: ByteArray = "Token=fake-token".toByteArray(),
-) : HttpURLConnection(URL("https://android.clients.google.com/auth")) {
-    val output = ByteArrayOutputStream()
-    var disconnected = false
-    var inputRead = false
-    override fun connect() = Unit
-    override fun disconnect() { disconnected = true }
-    override fun usingProxy(): Boolean = false
-    override fun getResponseCode(): Int = status
-    override fun getOutputStream(): ByteArrayOutputStream = output
-    override fun getInputStream(): ByteArrayInputStream { inputRead = true; return ByteArrayInputStream(body) }
-    override fun getContentType(): String = "text/plain; charset=UTF-8"
 }

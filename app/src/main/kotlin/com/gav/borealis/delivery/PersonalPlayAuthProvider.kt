@@ -11,11 +11,11 @@ import com.thelightphone.sdk.auth.GooglePlayDiagnosticOutcome
 import com.thelightphone.sdk.auth.GooglePlayDiagnosticStage
 import java.io.ByteArrayOutputStream
 import java.io.IOException
-import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URLEncoder
 import java.util.Locale
 import java.util.Properties
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -26,6 +26,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import okhttp3.Call
+import okhttp3.Headers.Companion.toHeaders
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 
 /** The long-lived Play credential belongs in the phone's encrypted SDK store, never DataStore. */
 class PersonalPlayCredential(val email: String, val token: String) {
@@ -370,30 +375,24 @@ private fun exchangeGoogleSetupCredential(
  * rejects redirects, and strips raw error responses. Use it for every personal Play helper.
  */
 class PersonalPlayHttpClient internal constructor(
-    private val openConnection: (URI) -> HttpURLConnection,
+    private val calls: Call.Factory,
 ) : IHttpClient {
-    constructor() : this({ it.toURL().openConnection() as HttpURLConnection })
+    constructor() : this(createPersonalPlayOkHttpClient())
 
     private val status = MutableStateFlow(0)
     override val responseCode: StateFlow<Int> = status.asStateFlow()
 
-    override fun post(url: String, headers: Map<String, String>, body: ByteArray): PlayResponse {
-        // GPlayAPI uses this overload for protobuf. URLConnection otherwise defaults a
-        // missing content type to form encoding, which mislabels device-config uploads.
-        val requestHeaders = if (headers.keys.any { it.equals("Content-Type", ignoreCase = true) }) {
-            headers
-        } else {
-            headers + ("Content-Type" to "application/x-protobuffer")
-        }
-        return request(url, "POST", requestHeaders, body)
-    }
+    // Match Aurora's raw-body construction: no inferred media type, unchanged bytes.
+    override fun post(url: String, headers: Map<String, String>, body: ByteArray): PlayResponse =
+        request(url, "POST", headers, body)
 
     override fun post(url: String, headers: Map<String, String>, params: Map<String, String>): PlayResponse =
         if (url == GOOGLE_ANDROID_AUTH_URL) {
             request(
                 url,
                 "POST",
-                headers + ("Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8"),
+                headers.filterKeys { !it.equals("Content-Type", ignoreCase = true) } +
+                    ("Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8"),
                 encodeParameters(params).toByteArray(Charsets.UTF_8),
             )
         } else {
@@ -430,54 +429,58 @@ class PersonalPlayHttpClient internal constructor(
         ) {
             throw IOException("Unexpected Google Play endpoint.")
         }
-        var connection: HttpURLConnection? = null
         try {
-            connection = openConnection(uri).apply {
-                connectTimeout = 15_000
-                readTimeout = 30_000
-                requestMethod = method
-                instanceFollowRedirects = false
-                useCaches = false
-                headers.forEach(::setRequestProperty)
+            val request = Request.Builder()
+                .url(url)
+                .headers(headers.toHeaders())
+                .method(method, body?.toRequestBody())
+                .build()
+            // Do not let URL canonicalization turn an allowed FDFE path into /auth.
+            if (request.url.encodedPath != uri.rawPath) {
+                throw IOException("Unexpected Google Play endpoint.")
             }
-            if (body != null) {
-                connection.doOutput = true
-                connection.outputStream.use { it.write(body) }
-            }
-            val code = connection.responseCode
-            status.value = code
-            if (code !in 200..299) {
-                return PlayResponse(code = code, isSuccessful = false, errorString = "Google Play request failed.")
-            }
-            val limit = if (uri.path == "/auth") 65_536 else 8 * 1024 * 1024
-            val bytes = connection.inputStream.use { input ->
-                val output = ByteArrayOutputStream()
-                val buffer = ByteArray(8192)
-                while (true) {
-                    val count = input.read(buffer)
-                    if (count < 0) break
-                    if (output.size() + count > limit) throw IOException("Google Play response was too large.")
-                    output.write(buffer, 0, count)
+            return calls.newCall(request).execute().use { response ->
+                val code = response.code
+                status.value = code
+                if (code !in 200..299) {
+                    return@use PlayResponse(code = code, isSuccessful = false, errorString = "Google Play request failed.")
                 }
-                output.toByteArray()
+                val limit = if (uri.path == "/auth") 65_536 else 8 * 1024 * 1024
+                val bytes = response.body.byteStream().use { input ->
+                    val output = ByteArrayOutputStream()
+                    val buffer = ByteArray(8192)
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        if (output.size() + count > limit) throw IOException("Google Play response was too large.")
+                        output.write(buffer, 0, count)
+                    }
+                    output.toByteArray()
+                }
+                PlayResponse(
+                    code = code,
+                    isSuccessful = true,
+                    responseBytes = bytes,
+                    errorString = "",
+                    type = response.header("Content-Type")?.substringBefore(';'),
+                )
             }
-            return PlayResponse(
-                code = code,
-                isSuccessful = true,
-                responseBytes = bytes,
-                errorString = "",
-                type = connection.contentType?.substringBefore(';'),
-            )
         } catch (exception: CancellationException) {
             throw exception
         } catch (_: Exception) {
             // Never let connection exceptions expose an account-bearing URL or response.
             throw IOException("Google Play request could not be completed.")
-        } finally {
-            connection?.disconnect()
         }
     }
 }
+
+internal fun createPersonalPlayOkHttpClient(): OkHttpClient = OkHttpClient.Builder()
+    .connectTimeout(15, TimeUnit.SECONDS)
+    .readTimeout(30, TimeUnit.SECONDS)
+    .writeTimeout(30, TimeUnit.SECONDS)
+    .followRedirects(false)
+    .followSslRedirects(false)
+    .build()
 
 private const val GOOGLE_ANDROID_AUTH_URL = "https://android.clients.google.com/auth"
 

@@ -195,6 +195,8 @@ dependencies {
     implementation(libs.gplayapi) {
         exclude(group = "com.google.protobuf", module = "protobuf-javalite")
     }
+    // Match GPlayAPI's OkHttp engine without upgrading the already resolved runtime.
+    implementation(libs.okhttp)
     // GPlayAPI's generated lite messages run on the full protobuf runtime too.
     // The Light SDK push connector already uses the full runtime; this direct,
     // pinned dependency aligns its version so only one implementation is packaged.
