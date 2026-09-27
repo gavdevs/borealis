@@ -19,6 +19,17 @@ Borealis is Gav's centrally hosted service at [borealis.loosewire.dev](https://b
 Create an account, sign in, and pair your phone. Users do not configure a server
 or need an admin token; curator provisioning is private operator work.
 
+On the paired phone, open `SIGN IN`. Sign in with Google so Borealis can download
+and update your approved apps from Google Play. Enter your details on Google's
+page inside Borealis; no separately installed browser is required. Your connection
+is saved securely on the phone. The companion does not collect Google credentials,
+and Borealis does not store your Google password.
+Use `DISCONNECT` to remove Borealis's saved Play credentials from the phone.
+
+Your Borealis username/password account is separate from this Google sign-in.
+Keep using the companion to pair phones, choose approved apps, and send install
+jobs; catalog approval remains curator-only.
+
 ## Development and operations
 
 - **Companion development:** see [companion/README.md](companion/README.md) for Node.js,
@@ -71,8 +82,14 @@ signing-key bytes were verified unchanged. Browsers must sign in again; Better A
 uses opaque session tokens and signed cookies. Wrangler deployment to Workers Free
 and hosted HTTPS account, pairing, and signed-job checks passed; temporary fixtures
 were cleaned. Legacy-password production signin, native GitHub build connection,
-and physical LP3 installation remain unverified. See the
+and physical LP3 end-to-end approved-app installation remain unverified. See the
 [deployment runbook](docs/deployment.md) for session-secret handling and remaining checks.
+
+The v0.1.3 phone-local Google sign-in build is installed on the LP3, and the user
+confirmed that Google's page opens in its embedded WebView. Completing Google
+authentication, acquiring a usable Play credential, and installing/updating an
+approved app still need physical testing. This experimental flow is not supported
+Google OAuth, and Google may reject the embedded browser.
 
 Borealis is one shared hosted service where each person logs in and
 pairs their own phones. Turso is the chosen hosted SQLite provider (replacing

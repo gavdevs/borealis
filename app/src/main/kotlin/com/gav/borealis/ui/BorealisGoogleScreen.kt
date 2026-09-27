@@ -158,18 +158,21 @@ class BorealisGoogleScreen(sealedActivity: SealedLightActivity) :
                     } else {
                         LightScrollView(Modifier.fillMaxSize().padding(1f.gridUnitsAsDp())) {
                             LightText(
-                                if (state.connected) "CONNECTED" else "CONNECT GOOGLE PLAY",
+                                if (state.connected) "CONNECTED" else "SIGN IN",
                                 LightTextVariant.Heading,
                             )
                             LightText(
-                                state.message ?: if (state.loading) "Checking connection…" else
-                                    "Experimental sign-in runs on this phone. Google credentials stay here, not in the companion server.",
+                                state.message ?: when {
+                                    state.loading -> "Checking connection…"
+                                    state.connected -> "Your Google Play connection is saved on this phone."
+                                    else -> "Sign in with Google so Borealis can download and update your approved apps from Google Play."
+                                },
                                 LightTextVariant.Copy,
                                 modifier = Modifier.padding(top = 0.75f.gridUnitsAsDp()),
                             )
                             if (!state.connected && !state.loading) {
                                 LightText(
-                                    "This first prototype checks Google sign-in on the LP3. Companion keyboard assistance is not enabled yet. Google may reject this browser or require extra verification.",
+                                    "Enter your details on Google's page. Your connection is saved securely on this phone.",
                                     LightTextVariant.Copy,
                                     modifier = Modifier.padding(top = 0.75f.gridUnitsAsDp()),
                                 )

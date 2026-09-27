@@ -14,13 +14,13 @@ Phone verifies job -> direct Play download -> base + splits verification
 
 The companion backend never receives readable Google credentials and never proxies or stores APK bytes.
 
-## Personal Google sign-in prototype
+## Phone-local Google sign-in
 
 The phone now uses personal Play authentication instead of Aurora's shared anonymous
 dispenser. A dedicated, fixed-origin Google account WebView supplies the account-setup
 credential to GPlayAPI; the resulting reusable credential is stored only in an
 Android Keystore-encrypted file excluded from backups. No Google password is stored.
-The browser disables debugging, suppresses console logs, clears cookies/storage on
+The embedded WebView disables debugging, suppresses console logs, clears cookies/storage on
 exit, and cannot become an arbitrary browser. Leaving the app cancels sign-in.
 
 The SDK facade is an explicit `sdk-extension/client` overlay compiled into the
@@ -33,12 +33,17 @@ authentication form fields stay out of request URLs. Disconnect removes protecte
 credentials and invalidates Borealis's in-memory Play authentication; it is not a
 Google-side token revocation.
 
-This first checkpoint exposes `GOOGLE` on the phone, to validate native login on
-the physical LP3. Companion remote input is **not implemented** yet. The next stage
-is a temporary, explicitly enabled, end-to-end encrypted remote keyboard scoped
-only to this sign-in view, after the native flow is proven. Browser code would handle
-typed text, but the backend must never store/log or decrypt it. MFA or native prompts
-may still require local interaction. No general screen sharing/control is planned.
+After pairing, users open `SIGN IN` and enter their Google credentials directly
+on Google's page in Borealis so it can download and update approved apps from
+Google Play. No separately installed browser is required. Google account challenges
+are handled on the phone; support for every challenge type is not established.
+The companion's separate Borealis username/password login provides account access,
+phone pairing, app selection, and install jobs; catalog approval remains curator-only.
+
+The v0.1.3 build is installed on the physical LP3, and the user confirmed that the
+embedded Google page opens. Completed authentication, reusable credential exchange,
+and end-to-end approved-app delivery/install/update remain unverified. Page loading
+alone does not establish that Google accepts the full sign-in flow.
 
 ## Shared accounts
 
@@ -71,7 +76,7 @@ The production migration was applied on 2026-09-26 after a private backup;
 domain records and signing-key bytes were verified unchanged. Wrangler deployment
 to Workers Free and the hosted HTTPS account/pairing/signed-job checks passed,
 without a CPU override or billing change. Legacy-password signin is locally tested
-but not production-verified; physical phone installation remains unverified.
+but not production-verified; physical approved-app installation remains unverified.
 See the [deployment runbook](deployment.md) for the remaining checks.
 
 The shared catalog is curator-managed. Each member's chosen apps, phones,

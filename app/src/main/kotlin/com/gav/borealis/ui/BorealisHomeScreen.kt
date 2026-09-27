@@ -280,8 +280,8 @@ class BorealisHomeScreen(sealedActivity: SealedLightActivity) :
 
     @Composable
     private fun ActionBar(state: BorealisUiState) {
-        val googleButton = LightBarButton.Text(
-            text = "GOOGLE",
+        val signInButton = LightBarButton.Text(
+            text = "SIGN IN",
             onClick = { navigateTo(::BorealisGoogleScreen) { viewModel.load() } },
         )
         val items = when {
@@ -301,10 +301,10 @@ class BorealisHomeScreen(sealedActivity: SealedLightActivity) :
             )
             !state.installAccessGranted -> listOf(
                 LightBarButton.Text(text = "ALLOW INSTALLS", onClick = viewModel::openInstallSettings),
-                googleButton,
+                signInButton,
             )
             else -> listOf(
-                googleButton,
+                signInButton,
                 LightBarButton.LightIcon(
                     icon = LightIcons.REFRESH,
                     onClick = viewModel::sync,

@@ -61,16 +61,17 @@ app state. See [Android's signing guidance](https://developer.android.com/studio
 
 1. Review and commit the intended release changes on `main`. Set the semantic
    `versionName` and a strictly increasing `versionCode` in `app/lighttool.toml`
-   before each new release tag. The current candidate is `0.1.3`, version code
-   `4`, the phone-local Google sign-in prototype. Never move a failed tag onto fixed source.
+   before each new release tag. The current candidate is `0.1.4`, version code
+   `5`, with plain-language phone sign-in instructions and a `SIGN IN` entry button.
+   Never move a failed tag onto fixed source.
 2. Push `main` and wait for CI to pass on that exact commit. The release workflow
    checks main-branch ancestry but does not itself require a successful CI run.
 3. Create and push an immutable tag matching `v<versionName>` at the checked
    commit. For the current candidate, after confirming `HEAD` is that commit:
 
    ```sh
-   git tag -a v0.1.3 -m "Borealis v0.1.3"
-   git push origin refs/tags/v0.1.3
+   git tag -a v0.1.4 -m "Borealis v0.1.4"
+   git push origin refs/tags/v0.1.4
    ```
 
    The tag push starts `Draft Android release` on GitHub-hosted runners. A manual
