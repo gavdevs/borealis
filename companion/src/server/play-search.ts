@@ -45,6 +45,12 @@ async function readSearchHtml(response: Response): Promise<string> {
     return new TextDecoder().decode(bytes.subarray(0, byteLength))
   } catch (error) {
     if (error instanceof PlaySearchResponseError) throw error
+    console.error(JSON.stringify({
+      event: 'play_search_body_read_error',
+      status: response.status,
+      name: error instanceof Error ? error.name : 'UnknownError',
+      message: error instanceof Error ? error.message : String(error),
+    }))
     throw new PlaySearchResponseError('Google Play search response could not be read.')
   } finally {
     if (reader) {
@@ -191,7 +197,16 @@ export class GooglePlayWebSearchProvider implements PlaySearchProvider {
         redirect: 'manual',
         signal: AbortSignal.timeout(10_000),
       })
-    } catch {
+    } catch (error) {
+      // The sanitized message below is shown to users. Log the real error for
+      // the operator (wrangler tail / observability); keep internals out of the
+      // user-facing payload.
+      console.error(JSON.stringify({
+        event: 'play_search_network_error',
+        url: url.toString(),
+        name: error instanceof Error ? error.name : 'UnknownError',
+        message: error instanceof Error ? error.message : String(error),
+      }))
       throw new PlaySearchResponseError('Google Play search could not be reached.')
     }
     if ((response.type as string) === 'opaqueredirect'
