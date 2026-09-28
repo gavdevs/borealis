@@ -5,6 +5,12 @@ export type AccountSummary = {
   createdAt: string
 }
 
+// Aggregated service counts. Only ever returned to the curator account, so no
+// per-person data or telemetry exists behind this summary.
+export type UsageStats = {
+  accounts: number
+}
+
 export type AllowlistItem = {
   packageName: string
   displayName: string

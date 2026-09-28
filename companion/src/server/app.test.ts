@@ -283,4 +283,16 @@ describe('Borealis personal-library API', () => {
     expect(aliceDevices.devices.length + bobDevices.devices.length).toBe(1)
     expect(await database.listDevices()).toHaveLength(1)
   })
+
+  it('shares the aggregate account count with the curator only', async () => {
+    expect((await request('/me/stats')).status).toBe(401)
+    expect((await request('/me/stats', alice)).status).toBe(404)
+    const created = await database.createAccount({
+      id: 'fixture-owner-id', username: 'owner', passwordHash: 'better-auth-managed',
+      createdAt: NOW, sessionDigest: 'fixture-session-digest',
+      sessionExpiresAt: new Date(Date.parse(NOW) + 86400_000).toISOString(), bootstrap: true,
+    })
+    expect(created?.role).toBe('curator')
+    expect(await database.usageStats()).toEqual({ accounts: 2 })
+  })
 })

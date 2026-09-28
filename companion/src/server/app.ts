@@ -203,6 +203,13 @@ export async function createBorealisApp(options: AppOptions): Promise<Hono<{ Var
     })
   })
 
+  app.get(`${API}/me/stats`, async (c) => {
+    // Owner-only usage summary. Members get the same 404 as an unknown route
+    // so the counter's existence is never exposed.
+    if (c.get('account').role !== 'curator') return c.json({ error: 'Not found.' }, 404)
+    return c.json({ stats: await database.usageStats() })
+  })
+
   app.get(`${API}/me/apps`, async (c) => {
     return c.json({ items: await database.listAccountApps(c.get('account').id) })
   })

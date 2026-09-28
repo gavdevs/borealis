@@ -98,6 +98,10 @@ Public signup creates an ordinary account. Legacy role, allowlist, assignment,
 and bootstrap storage can remain for non-destructive compatibility; they do not
 grant a shared approval workflow. Existing ownership and signing keys are preserved.
 
+The only usage signal is the running count of accounts ever created, served to
+the operator role and hidden from members. No events, analytics, or per-person
+data exist anywhere in the app.
+
 ## Trust model
 
 - A package must belong to the paired account's personal library before the service issues its install job.

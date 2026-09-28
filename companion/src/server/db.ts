@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { Client, InValue, Transaction, TransactionMode } from '@libsql/client'
-import type { AccountSummary, AllowlistItem, DeviceLibraryItem, DeviceSummary, JobSummary, PairingSummary, PlaySearchResult } from '../shared/api.js'
+import type { AccountSummary, AllowlistItem, DeviceLibraryItem, DeviceSummary, JobSummary, PairingSummary, PlaySearchResult, UsageStats } from '../shared/api.js'
 import { migrateBetterAuth } from './better-auth-migration.js'
 import { generateSigningKey, type PersistedSigningKey } from './crypto.js'
 
@@ -233,6 +233,12 @@ export class BorealisDatabase {
       const row = await first<AccountRow>(this.client, 'SELECT * FROM accounts WHERE id = ?', [accountId])
       return row ? mapAccount(row) : null
     })
+  }
+
+  async usageStats(): Promise<UsageStats> {
+    // A simple creation count is the whole usage signal; no events are written.
+    const row = await first<{ count: number }>(this.client, 'SELECT COUNT(*) AS count FROM accounts')
+    return { accounts: row?.count ?? 0 }
   }
 
   // Call only with an authenticated Better Auth user or its trusted create hook.

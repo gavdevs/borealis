@@ -35,8 +35,9 @@ or a hosted libSQL database on Turso. The signed-job protocol is unchanged.
 Accounts use usernames and passwords, without email. Each account has its own
 library and paired phones. Automatic server-side category filtering and targeted
 email/browser exclusions govern new additions. There is no curator, shared
-publisher approval, or manual send-to-phone step. Unknown categories are excluded;
 category filtering is best effort, not a guarantee of an app's exact behavior.
+Borealis collects no telemetry. The only usage signal is the running count of
+accounts ever created, visible only to the operator role.
 
 The shared service is hosted at `https://borealis.loosewire.dev`. Its Cloudflare
 Worker adapter and deployment pipeline provide
@@ -309,6 +310,8 @@ session cookie, not the old admin bearer. Mutation requests also send
 - `GET /me/devices`
 - `DELETE /me/devices/:deviceId`
 - `GET|POST /me/devices/:deviceId/jobs`
+- `GET /me/stats` → aggregate account count for the operator (curator) role. Members
+  receive an ordinary 404; there is no per-person tracking anywhere in the app.
 
 Legacy assignment routes are unavailable; library membership replaces that step.
 `GET /catalog/search` requires sign-in and returns eligible public Play apps for

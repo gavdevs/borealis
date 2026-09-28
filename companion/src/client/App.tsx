@@ -1,5 +1,5 @@
 import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
-import type { AccountSummary, AllowlistItem, DeviceSummary, JobSummary, PairingSummary, PlaySearchResult } from '../shared/api.js'
+import type { AccountSummary, AllowlistItem, DeviceSummary, JobSummary, PairingSummary, PlaySearchResult, UsageStats } from '../shared/api.js'
 import { ApiError, apiRequest } from './api.js'
 import { createRequestGuard } from './request-guard.js'
 import { PASSWORD_MIN_LENGTH, PASSWORD_MAX_CODE_UNITS, passwordValidationError } from '../shared/password-policy.js'
@@ -209,9 +209,30 @@ function Profile({ account, onSignOut, onLock }: { account: AccountSummary; onSi
         </form> : <button className="action" disabled={Boolean(busy)} onClick={() => setChangingPassword(true)}>Change password</button>}
       </Section>
       <Section id="session" label="This browser" title="Sign out"><p className="section-copy">Signing out here doesn’t disconnect your phones.</p><button className="action" disabled={Boolean(busy)} onClick={() => void run('signout', onSignOut)}>{busy === 'signout' ? 'Signing out…' : 'Sign out'}</button></Section>
+      {account.role === 'curator' ? <UsageSection /> : null}
     </div>
   </div>
 }
+
+function UsageSection() {
+  const [stats, setStats] = useState<UsageStats | null>(null)
+  const [error, setError] = useState('')
+  useEffect(() => {
+    let current = true
+    setStats(null); setError('')
+    apiRequest<{ stats: UsageStats }>('/me/stats')
+      .then((response) => { if (current) setStats(response.stats) })
+      .catch((caught) => { if (current) setError(messageFor(caught)) })
+    return () => { current = false }
+  }, [])
+  return <Section id="usage" label="Service" title="How many accounts?">
+    <p className="section-copy">Borealis records nothing per person. This is the running count of accounts ever created.</p>
+    {error ? <p className="error" role="alert">{error}</p>
+      : stats ? <p className="section-copy"><strong>{stats.accounts.toLocaleString()}</strong> {stats.accounts === 1 ? 'account' : 'accounts'} so far.</p>
+        : <p className="status-line" role="status">Counting accounts…</p>}
+  </Section>
+}
+
 
 function Companion({ onLock, page }: { onLock: () => void; page: Exclude<Page, 'profile'> }) {
   const [refreshGuard] = useState(createRequestGuard)
