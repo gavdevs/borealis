@@ -161,7 +161,13 @@ export class GooglePlayWebSearchProvider implements PlaySearchProvider {
   constructor(
     private readonly language = 'en',
     private readonly country = 'us',
-    private readonly fetcher: FetchLike = fetch,
+    // workerd treats the global `fetch` as a privileged function: storing it in
+    // a property and calling `this.fetcher(...)` throws "Illegal invocation:
+    // function called with incorrect `this` reference". Bind the global at
+    // capture so the default path always runs with the correct receiver, while
+    // keeping the constructor seam for tests. Node's undici fetch is unbound,
+    // so this is a no-op there.
+    private readonly fetcher: FetchLike = fetch.bind(globalThis),
   ) {}
 
   async search(query: string, limit: number): Promise<PlaySearchResult[]> {
