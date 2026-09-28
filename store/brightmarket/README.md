@@ -1,11 +1,13 @@
 # BrightMarket release kit
 
-Release target: **Borealis v0.1.7**, Android version code **12**, package
+Latest public release: **[Borealis v0.1.7](https://github.com/gavdevs/borealis/releases/tag/v0.1.7)**, Android version code **12**, package
 **com.loosewire.borealis**. This adopts the same namespace as Lightious and Kelp.
-The signed candidate passed CI and APK verification and is installed beside the
-old app on the LP3. The first-run screen check is waiting for the phone to be
-unlocked; publication and submission are still pending. BrightMarket has not
-received or accepted a listing through this work.
+The signed release passed CI and APK verification and is installed beside the
+old app on the LP3. Its unlocked cold launch and fresh pairing screen passed;
+anonymous access to the release and listing assets also passed. Fresh pairing,
+Google sign-in, and installation permission still need completing on the new
+installation. BrightMarket submission is next; no listing has been submitted or
+accepted through this work.
 
 ## Listing
 
@@ -60,20 +62,18 @@ are not representations of Play availability or app compatibility.
 
 ## Publish and submit
 
-1. Verify CI, the signed stable APK, the original signing certificate, and a
-   separate LP3 installation of `com.loosewire.borealis`, preserving the old app.
-   Check the packaged launcher icon, fresh onboarding, and connection state.
-2. Make the repository public only after the tracked-source/history publication
-   preflight. Keep runtime secrets and release signing keys in their existing
-   encrypted stores; never upload local `.env`, database, or keystore files.
-3. Publish the verified **v0.1.7** stable release from its draft. Keep the one
-   release APK and all source/license/provenance assets together. Do not publish
-   old stable drafts or relabel an alpha build as a stable release.
-4. Open the [BrightMarket submission portal](https://brightmarket.gzl.dev/submit.html),
+The repository is public and v0.1.7 is published as the latest stable release.
+CI, artifact verification, separate installation, and first-run rendering have
+passed. No old stable drafts were published and no runtime secrets or signing
+keys were added to the public repository.
+
+1. Complete pairing, Google sign-in, and Allow installs in the new phone
+   installation. The previous package's saved connection does not transfer.
+2. Open the [BrightMarket submission portal](https://brightmarket.gzl.dev/submit.html),
    sign in with GitHub, select `gavdevs/borealis`, and use the fields in the YAML
    and the description above. The portal verifies ownership; nothing here submits
    a request or promises acceptance.
-5. After listing, check that the expected stable version, original certificate,
+3. After listing, check that the expected stable version, original certificate,
    icon, phone screenshots, and web screenshots appear in the catalog.
 
 The index needs a public, unarchived repository and a published stable release.
@@ -97,9 +97,14 @@ The reports confirm 80 app and 15 SDK authentication tests with no failures;
 and version, non-debuggable optimized build flags, original certificate, exact
 app/SDK source archives, SDK overlay, and unchanged GPlay source verified.
 The new package installed successfully with a separate UID while the old app
-retained its UID, version, and original first-install timestamp. Cold-launch
-visual verification is awaiting unlock; fresh pairing and Google sign-in have
-not been tested on the new installation.
+retained its UID, version, and original first-install timestamp. After the user
+unlocked the phone, a cold launch displayed the new package's pairing screen at
+the production companion URL. Fresh pairing, Google sign-in, and installation
+permission have not been tested on the new installation.
+
+Published as latest stable on 2026-09-27. Anonymous checks confirmed the public,
+unarchived repository; the exact APK filename, size, and SHA-256; source/license
+assets; all seven screenshots; icon; renamed catalog YAML; and README setup links.
 
 v0.1.7 APK SHA-256: `ea73a394359b5694ced20c156dbd11dfb3ee558d631cee84aa0cc5bbeba208d3`.
 
