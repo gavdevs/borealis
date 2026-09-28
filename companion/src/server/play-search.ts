@@ -186,11 +186,18 @@ export class GooglePlayWebSearchProvider implements PlaySearchProvider {
           Accept: 'text/html,application/xhtml+xml',
           'User-Agent': 'Borealis/0.1 (+personal companion; public Play metadata only)',
         },
-        redirect: 'error',
+        // The Cloudflare Workers runtime rejects redirect: 'error', so 'manual'
+        // plus the explicit check below preserves the "reject redirects" intent.
+        redirect: 'manual',
         signal: AbortSignal.timeout(10_000),
       })
     } catch {
       throw new PlaySearchResponseError('Google Play search could not be reached.')
+    }
+    if ((response.type as string) === 'opaqueredirect'
+      || (response.status >= 300 && response.status < 400)) {
+      await response.body?.cancel()
+      throw new PlaySearchResponseError('Google Play search did not return a page.')
     }
     if (allowMissing && response.status === 404) {
       await response.body?.cancel()

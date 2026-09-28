@@ -89,6 +89,9 @@ Each person's library, phones, and job history are scoped to that account.
 Search and new additions validate canonical Play metadata against an automatic
 category policy and targeted email/browser exclusions; client-supplied categories
 cannot authorize an app. This is best-effort classification, not human review.
+Catalog search reads public Play web metadata over a Workers-compatible `fetch`.
+It uses `redirect: 'manual'` with an explicit redirect rejection, because the
+Workers runtime does not implement `redirect: 'error'`.
 Phone pairing is
 claimed atomically by entering the exact short-lived code, never by listing
 other people's pending requests. The phone continues using its independent

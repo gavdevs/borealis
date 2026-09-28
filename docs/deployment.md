@@ -215,6 +215,16 @@ is no publisher-approval provisioning step. Updates retain installed-signature c
   protection against distributed abuse or usage charges.
 - Observe Worker errors and CPU usage after deployment. Logs intentionally avoid
   passwords, cookies, bearer credentials, SQL parameter values, and secret URLs.
+- The Worker's only outbound `fetch` is the Google Play catalog request in
+  `companion/src/server/play-search.ts`. The Workers runtime rejects
+  `redirect: 'error'` at request time with `TypeError: Invalid redirect value, must
+  be one of "follow" or "manual"`, so the provider uses `redirect: 'manual'` and
+  rejects 3xx and opaqueredirect responses explicitly.
+- That failure mode is invisible to `pnpm test` (Node environment),
+  `pnpm worker:types:check`, `pnpm worker:typecheck`, and
+  `wrangler deploy --dry-run`, because none of them execute request-time code
+  inside the Workers runtime. Only a Workers-runtime test or a live request
+  exercises it.
 - Roll back a bad Worker revision using Wrangler deployments/rollback after
   checking which version is safe against the current database schema. A failed
   post-deploy smoke test is not automatically rolled back.

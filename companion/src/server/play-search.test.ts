@@ -58,7 +58,7 @@ describe('Google Play web search provider', () => {
       expect(url.origin).toBe('https://play.google.com')
       expect(url.pathname).toBe('/store/apps/details')
       expect(url.searchParams.get('id')).toBe('com.example.northbank')
-      expect(init?.redirect).toBe('error')
+      expect(init?.redirect).toBe('manual')
       expect(init?.headers).not.toHaveProperty('Authorization')
       return new Response(detailsFixture())
     }
@@ -156,6 +156,38 @@ describe('Google Play web search provider', () => {
       throw new Error('upstream private debug detail')
     })
     await expect(provider.search('bank', 1)).rejects.toThrow('Google Play search could not be reached.')
+  })
+
+  it('requests search with manual redirects and the exact provider headers', async () => {
+    const fetcher = vi.fn<typeof fetch>(async () => new Response(PLAY_FIXTURE, { status: 200 }))
+    await new GooglePlayWebSearchProvider('en', 'us', fetcher).search('bank', 1)
+    expect(fetcher).toHaveBeenCalledOnce()
+    const [input, init] = fetcher.mock.calls[0] ?? []
+    expect(new URL(input!.toString()).origin).toBe('https://play.google.com')
+    expect(init?.redirect).toBe('manual')
+    expect(init?.headers).toMatchObject({
+      Accept: 'text/html,application/xhtml+xml',
+      'User-Agent': 'Borealis/0.1 (+personal companion; public Play metadata only)',
+    })
+    expect(init?.headers).not.toHaveProperty('Authorization')
+    expect(init?.signal).toBeInstanceOf(AbortSignal)
+  })
+
+  it('rejects redirect responses instead of following or parsing them', async () => {
+    const cancel = vi.fn()
+    const response = new Response(new ReadableStream<Uint8Array>({ cancel }), {
+      status: 302,
+      headers: { Location: 'https://consent.google.com/' },
+    })
+    await expect(providerFor(response).search('bank', 1)).rejects.toThrow('Google Play search did not return a page.')
+    expect(cancel).toHaveBeenCalledOnce()
+    expect(response.body?.locked).toBe(false)
+  })
+
+  it('rejects opaque redirect responses from the Workers runtime', async () => {
+    const response = new Response(null, { status: 302 })
+    Object.defineProperty(response, 'type', { value: 'opaqueredirect' })
+    await expect(providerFor(response).search('bank', 1)).rejects.toThrow('Google Play search did not return a page.')
   })
 
   it('cancels error response bodies without reading their contents', async () => {

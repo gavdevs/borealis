@@ -6,10 +6,12 @@ do not configure a server or need an admin token. Search and policy live here;
 the phone receives the user's library and short-lived install jobs for its packages.
 
 This service never proxies APK bytes and never accepts or stores Google account
-credentials. Catalog search reads public Google Play web metadata. The phone is
-responsible for obtaining the device-appropriate base and split APKs directly,
-verifying Play-provided hashes, package identity, and installed-signature continuity,
-and invoking Android's installer.
+credentials. Catalog search reads public Google Play web metadata over a
+Workers-compatible `fetch`: `redirect: 'manual'` with an explicit redirect
+rejection, because the Workers runtime does not implement `redirect: 'error'`.
+The phone is responsible for obtaining the device-appropriate base and split
+APKs directly, verifying Play-provided hashes, package identity, and
+installed-signature continuity, and invoking Android's installer.
 
 ## Interface reference
 
