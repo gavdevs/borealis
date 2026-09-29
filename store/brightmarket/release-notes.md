@@ -17,7 +17,7 @@ Future releases will update this new installation normally.
 
 ## Included
 
-- Your personal library: search on the website, add eligible apps, then install them on your phone. No curator approval.
+- Your personal library: search on the website, add any apps, then install them on your phone. No curator approval.
 - Real download progress with percentages, megabytes, and clear installation stages.
 - Installed and update-available status, with update actions and periodic checks.
 - A **Signed in** button when your Google connection is saved.

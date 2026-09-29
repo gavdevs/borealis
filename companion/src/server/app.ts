@@ -26,7 +26,6 @@ import {
 import { BorealisDatabase } from './db.js'
 import { PasswordBusyError, type PasswordRuntime } from './passwords.js'
 import type { PlaySearchProvider } from './play-search.js'
-import { appIdentityPolicyReason, appPolicyReason } from './app-policy.js'
 
 const API = '/api/borealis/v1'
 const DEVICE_BEARER_PATTERN = /^brl_device_[A-Za-z0-9_-]{43}$/
@@ -112,15 +111,13 @@ export async function createBorealisApp(options: AppOptions): Promise<Hono<{ Var
     try {
       if (!await limit(c, 'catalog-search', 30, 60)) return rateLimited(c, 60)
       // The requested limit is an upper bound. Keep each query's detail lookup
-      // batch small enough for the Free Worker; titles only pre-filter obvious
-      // exclusions and never authorize an app without canonical metadata.
+      // batch small enough for the Free Worker.
       const candidates = (await playSearch.search(parsed.data.q, parsed.data.limit))
-        .filter((item) => appIdentityPolicyReason(item) === null)
         .slice(0, Math.min(parsed.data.limit, MAX_SEARCH_DETAIL_REQUESTS))
       const results = []
       let failedDetails = 0
-      // Bound concurrent HTML buffers/subrequests on Workers Free. Only canonical
-      // detail metadata can satisfy policy; search snippets are not permission.
+      // Bound concurrent HTML buffers/subrequests on Workers Free. Canonical
+      // detail metadata is returned for apps whose listing still resolves.
       for (let offset = 0; offset < candidates.length; offset += 3) {
         const details = await Promise.all(candidates.slice(offset, offset + 3)
           .map((candidate) => playSearch.details(candidate.packageName).catch(() => {
@@ -128,7 +125,7 @@ export async function createBorealisApp(options: AppOptions): Promise<Hono<{ Var
             return null
           })))
         for (const item of details) {
-          if (item && appPolicyReason(item) === null) {
+          if (item) {
             const { category: _category, description: _description, ...result } = item
             results.push(result)
           }
@@ -221,8 +218,6 @@ export async function createBorealisApp(options: AppOptions): Promise<Hono<{ Var
     try {
       const details = await playSearch.details(parsed.data.packageName)
       if (!details) return c.json({ error: 'This app could not be found on Google Play.' }, 404)
-      const policyReason = appPolicyReason(details)
-      if (policyReason) return c.json({ error: policyReason }, 403)
       const item = await database.addResolvedAccountApp(c.get('account').id, details, clock().toISOString())
       return item ? c.json({ item }, 201) : c.json({ error: 'Account not found.' }, 404)
     } catch {

@@ -248,7 +248,7 @@ def smoke(browser):
         nav.get_by_role('link', name='Apps', exact=True).click()
         search.get_by_role('searchbox', name='Search apps').fill('nothing')
         search.get_by_role('button', name='Search', exact=True).click()
-        expect(page.get_by_text('No eligible apps found. Try another name or publisher.')).to_be_visible()
+        expect(page.get_by_text('No apps found. Try another name or publisher.')).to_be_visible()
         search.get_by_role('searchbox', name='Search apps').fill('failure')
         search.get_by_role('button', name='Search', exact=True).click()
         expect(page.get_by_role('alert')).to_contain_text('Search unavailable')

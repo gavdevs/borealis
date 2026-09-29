@@ -26,7 +26,7 @@ inline header SVG and `public/assets/borealis.svg` favicon. It remains monochrom
 visible at mobile sizes; the adjacent wordmark supplies its accessible name.
 
 - **Home:** connected phones and installation/update activity.
-- **Apps:** search eligible Play apps and add to your library; it appears on every paired phone.
+- **Apps:** search Play apps and add to your library; it appears on every paired phone.
 - **Pairing:** enter a code, preview the requesting phone, explicitly approve it.
 - Package identifiers, signing fingerprints, and request diagnostics belong in
   expandable details, not the default workflow.
@@ -35,9 +35,8 @@ This is a React/TypeScript interface with Vite and plain CSS, a Hono API, and
 SQLite-compatible storage through libSQL. It supports either a local database
 or a hosted libSQL database on Turso. The signed-job protocol is unchanged.
 Accounts use usernames and passwords, without email. Each account has its own
-library and paired phones. Automatic server-side category filtering and targeted
-email/browser exclusions govern new additions. There is no curator, shared
-category filtering is best effort, not a guarantee of an app's exact behavior.
+library and paired phones, and chooses its own apps without server-side
+filtering or approval.
 Borealis collects no telemetry. The only usage signal is the running count of
 accounts ever created, visible only to the operator role.
 
@@ -316,8 +315,8 @@ session cookie, not the old admin bearer. Mutation requests also send
   receive an ordinary 404; there is no per-person tracking anywhere in the app.
 
 Legacy assignment routes are unavailable; library membership replaces that step.
-`GET /catalog/search` requires sign-in and returns eligible public Play apps for
-every account. All phone operations are restricted to the account's own phones;
+`GET /catalog/search` requires sign-in and returns public Play apps for every
+account. All phone operations are restricted to the account's own phones;
 another account's device identifiers are treated as not found. The former admin
 and bootstrap endpoints are unavailable. APK URLs and bytes are deliberately
 absent from every companion endpoint.

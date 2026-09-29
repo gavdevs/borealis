@@ -73,8 +73,6 @@ Follow the download on your phone:
 
 - Borealis is for **Light Phone III** and is an independent, experimental app—not
   an official Light tool.
-- It focuses on practical apps and filters out categories such as games, social
-  networks, email, browsers, and entertainment. The filter isn't perfect.
 - Not every Android app will work on a Light Phone, even if it installs.
 - If an app doesn't appear on your phone, check your internet connection, finish
   pairing on both screens, and tap refresh.

@@ -104,7 +104,7 @@ describe('Borealis personal-library API', () => {
     expect(await (await request('/auth/session', alice)).json()).not.toHaveProperty('bootstrapAvailable')
   })
 
-  it('searches canonical policy-eligible Play apps for ordinary accounts and does not use an approval catalog', async () => {
+  it('searches Play apps for ordinary accounts and does not use an approval catalog', async () => {
     expect(await database.listAllowlist()).toEqual([])
     const response = await request('/catalog/search?q=bank', alice)
     expect(response.status).toBe(200)
@@ -122,32 +122,23 @@ describe('Borealis personal-library API', () => {
     expect((await (await request('/me/apps', alice)).json() as { items: unknown[] }).items).toHaveLength(1)
   })
 
-  it('makes canonical Lifestyle tools such as Hatch Sleep available to any account without a package approval', async () => {
-    const hatch = { ...metadata, packageName: 'com.hatchbaby.rest', displayName: 'Hatch Sleep', category: 'LIFESTYLE' }
-    vi.mocked(playSearch.search).mockResolvedValue([hatch])
-    vi.mocked(playSearch.details).mockResolvedValue(hatch)
+  it('makes any Play category available to any account without a package approval', async () => {
+    const cases: Record<string, PlayAppDetails> = Object.fromEntries([
+      { ...metadata, packageName: 'com.hatchbaby.rest', displayName: 'Hatch Sleep', category: 'LIFESTYLE' },
+      { ...metadata, packageName: 'com.example.social', displayName: 'Social Feed', category: 'SOCIAL' },
+      { ...metadata, packageName: 'com.example.game', displayName: 'Puzzle', category: 'GAME_PUZZLE' },
+      { ...metadata, packageName: 'com.example.browser', displayName: 'Quiet Browser', category: 'TOOLS' },
+      { ...metadata, packageName: 'com.example.mystery', displayName: 'Mystery App', category: 'UNKNOWN' },
+    ].map((entry) => [entry.packageName, entry]))
+    vi.mocked(playSearch.search).mockResolvedValue(Object.values(cases))
+    vi.mocked(playSearch.details).mockImplementation(async (packageName) => cases[packageName] ?? null)
+    expect(await (await request('/catalog/search?q=app', alice)).json())
+      .toMatchObject({ results: Object.values(cases).map(({ packageName }) => ({ packageName })) })
     const bob = await signup('bob')
     for (const session of [alice, bob]) {
-      expect(await (await request('/catalog/search?q=hatch', session)).json()).toMatchObject({ results: [{ packageName: hatch.packageName }] })
-      expect((await request('/me/apps', session, { packageName: hatch.packageName })).status).toBe(201)
-      expect(await (await request('/me/apps', session)).json()).toMatchObject({ items: [{ packageName: hatch.packageName }] })
+      expect((await request('/me/apps', session, { packageName: 'com.example.game' })).status).toBe(201)
+      expect(await (await request('/me/apps', session)).json()).toMatchObject({ items: [{ packageName: 'com.example.game' }] })
     }
-  })
-
-  it.each([
-    ['SOCIAL', 'Social Feed', 'com.example.social'], ['GAME_PUZZLE', 'Puzzle', 'com.example.game'],
-    ['ENTERTAINMENT', 'Videos', 'com.example.video'], ['PRODUCTIVITY', 'Gmail', 'com.google.android.gm'],
-    ['PRODUCTIVITY', 'Microsoft Outlook', 'com.microsoft.office.outlook'], ['TOOLS', 'Quiet Browser', 'com.example.browser'],
-    ['UNKNOWN', 'Mystery App', 'com.example.mystery'],
-  ])('excludes %s / %s from search and direct package additions', async (category, displayName, packageName) => {
-    const blocked = { ...metadata, category, displayName, packageName }
-    vi.mocked(playSearch.search).mockResolvedValue([blocked])
-    vi.mocked(playSearch.details).mockResolvedValue(blocked)
-    expect(await (await request('/catalog/search?q=app', alice)).json()).toMatchObject({ results: [] })
-    const response = await request('/me/apps', alice, { packageName })
-    expect(response.status).toBe(403)
-    expect(await response.json()).toHaveProperty('error', expect.stringMatching(/not available/))
-    expect(await database.listAllowlist()).toEqual([])
   })
 
   it('fails closed with a helpful error when metadata cannot be verified', async () => {
@@ -160,7 +151,7 @@ describe('Borealis personal-library API', () => {
     expect(await search.text()).not.toContain('private upstream detail')
   })
 
-  it('skips an unavailable search candidate without losing other eligible results', async () => {
+  it('skips an unavailable search candidate without losing other results', async () => {
     vi.mocked(playSearch.search).mockResolvedValue([{ ...metadata, packageName: 'com.example.missing' }, metadata])
     vi.mocked(playSearch.details).mockImplementation(async (packageName) => {
       if (packageName !== PACKAGE) throw new Error('unavailable')
@@ -169,14 +160,13 @@ describe('Borealis personal-library API', () => {
     expect(await (await request('/catalog/search?q=bank', alice)).json()).toMatchObject({ results: [{ packageName: PACKAGE }] })
   })
 
-  it('caps detail work at eight candidates and excludes obvious browser identities before fetching details', async () => {
+  it('caps detail work at eight candidates', async () => {
     const candidates = Array.from({ length: 20 }, (_, index) => ({ ...metadata, packageName: `com.example.bank${index}` }))
-    vi.mocked(playSearch.search).mockResolvedValue([{ ...metadata, packageName: 'com.android.chrome', displayName: 'Chrome' }, ...candidates])
+    vi.mocked(playSearch.search).mockResolvedValue(candidates)
     vi.mocked(playSearch.details).mockImplementation(async (packageName) => ({ ...metadata, packageName }))
     const result = await request('/catalog/search?q=bank&limit=20', alice)
     expect(result.status).toBe(200)
     expect(playSearch.details).toHaveBeenCalledTimes(8)
-    expect(playSearch.details).not.toHaveBeenCalledWith('com.android.chrome')
     expect((await result.json() as { results: unknown[] }).results).toHaveLength(8)
   })
 

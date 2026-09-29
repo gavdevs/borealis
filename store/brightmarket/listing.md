@@ -3,7 +3,7 @@
 Choose what reaches your phone.
 
 Borealis brings essential Android apps to Light Phone III without putting a full
-app store in your pocket. Search on the companion website, add an eligible app to
+app store in your pocket. Search on the companion website, add any app to
 your personal library, then install it on your phone.
 
 ## What it does
@@ -34,10 +34,8 @@ The Borealis website account and Google account are separate.
 Borealis is experimental, independently developed, and sideload-only. It is not
 an official Light tool or affiliated with Light, Aurora OSS, or Google.
 
-The companion filters off-purpose apps such as games, social networks, email,
-browsers, and entertainment using automatic metadata-based rules. This filter is
-imperfect and only affects installation through Borealis; it is not phone-wide
-blocking or parental control. There is no curator-approval step.
+The companion does not filter or curate the catalog: any app you find on
+Google Play can be added to your library. You choose what goes on your phone.
 
 Google Play access uses an unofficial integration and can change or stop working.
 An app being available or installable does not guarantee that it works on Light
