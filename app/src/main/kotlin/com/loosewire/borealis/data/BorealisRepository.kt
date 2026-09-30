@@ -5,8 +5,11 @@ import com.loosewire.borealis.install.BorealisInstallCoordinator
 import com.loosewire.borealis.install.InstallPreparationResult
 import com.loosewire.borealis.install.InstallProgress
 import com.loosewire.borealis.install.InstallStage
+import com.loosewire.borealis.install.UninstallProgress
+import com.loosewire.borealis.install.UninstallStage
 import com.loosewire.borealis.security.SignedJobVerifier
 import com.thelightphone.sdk.install.LightPackageInstallOutcome
+import com.thelightphone.sdk.install.LightPackageUninstallOutcome
 import com.thelightphone.sdk.install.LightPackageInstaller
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
@@ -18,6 +21,8 @@ data class BorealisSnapshot(
     val library: List<LibraryAppState> = emptyList(),
     val pendingInstall: PendingInstall? = null,
     val installProgress: InstallProgress? = null,
+    val pendingUninstall: PendingUninstall? = null,
+    val uninstallProgress: UninstallProgress? = null,
     val revision: Long = 0L,
 )
 
@@ -46,12 +51,15 @@ class BorealisRepository(
     suspend fun load(): BorealisSnapshot {
         val library = readLibrary(store.loadLibrary(), checkUpdates = false)
         val pending = store.loadPendingInstall()
+        val pendingUninstall = store.loadPendingUninstall()
         return BorealisSnapshot(
             session = store.loadSession(),
             pendingPairing = store.loadPending(),
             library = library,
             pendingInstall = pending,
             installProgress = pending?.let { pendingProgress(it, library) },
+            pendingUninstall = pendingUninstall,
+            uninstallProgress = pendingUninstall?.let { pendingUninstallProgress(it, library) },
             revision = store.lastRevision(),
         )
     }
@@ -105,12 +113,15 @@ class BorealisRepository(
         store.saveLibrary(library)
         store.saveRevision(sync.revision)
         val pending = store.loadPendingInstall()
+        val pendingUninstall = store.loadPendingUninstall()
         val appStates = readLibrary(library, checkUpdates = pending == null)
         BorealisSnapshot(
             session = session,
             library = appStates,
             pendingInstall = pending,
             installProgress = pending?.let { pendingProgress(it, appStates) },
+            pendingUninstall = pendingUninstall,
+            uninstallProgress = pendingUninstall?.let { pendingUninstallProgress(it, appStates) },
             revision = sync.revision,
         )
     }
@@ -125,9 +136,36 @@ class BorealisRepository(
         }
     }
 
+    /**
+     * Starts a PackageInstaller uninstall for a library app. Android shows its own
+     * confirmation even when Borealis installed the app. Pending state persists
+     * across process death; [reconcilePendingUninstall] resolves completion by
+     * checking both the result broadcast and the package list.
+     */
+    suspend fun uninstallLibraryApp(
+        packageName: String,
+    ): Result<ProcessingResult> = repositoryRunCatching {
+        installMutex.withLock {
+            require(store.loadPendingInstall() == null) { "An install is still in progress." }
+            require(store.loadPendingUninstall() == null) { "An uninstall is still in progress." }
+            val library = store.loadLibrary()
+            require(library.any { it.packageName == packageName }) {
+                "The app is not in this library."
+            }
+            require(installer.installedPackage(packageName) != null) {
+                "The app is not installed."
+            }
+            val session = installer.uninstall(packageName)
+            store.savePendingUninstall(PendingUninstall(packageName, session.id))
+            reconcilePendingUninstallInternal()
+                ?: ProcessingResult("$packageName was handed to Android for uninstall.", true)
+        }
+    }
+
     suspend fun syncAndUpdate(): Result<ProcessingResult> = repositoryRunCatching {
         installMutex.withLock {
             reconcilePendingInstallInternal()?.let { return@withLock it }
+            reconcilePendingUninstallInternal()?.let { return@withLock it }
             val snapshot = sync().getOrThrow()
             val update = snapshot.library.firstOrNull { it.status == LibraryAppStatus.UpdateAvailable }
             if (update != null) {
@@ -185,9 +223,43 @@ class BorealisRepository(
         return ProcessingResult(message, changed = terminal)
     }
 
+    /**
+     * Resolves a pending uninstall. PackageInstaller only guarantees the
+     * pending-user-action broadcast, so success also relies on the package no
+     * longer appearing in [LightPackageInstaller.installedPackage].
+     */
+    suspend fun reconcilePendingUninstall(): ProcessingResult? = installMutex.withLock {
+        reconcilePendingUninstallInternal()
+    }
+
+    private suspend fun reconcilePendingUninstallInternal(): ProcessingResult? {
+        val pending = store.loadPendingUninstall() ?: return null
+        val result = installer.uninstallResult(pending.requestId)
+        val stillInstalled = installer.installedPackage(pending.packageName) != null
+
+        val (message, terminal) = when {
+            !stillInstalled -> "Uninstalled ${pending.packageName}." to true
+            result?.outcome == LightPackageUninstallOutcome.Cancelled ->
+                (result.message ?: "Uninstall was cancelled.") to true
+            result?.outcome == LightPackageUninstallOutcome.Failed ->
+                (result.message ?: "Android could not uninstall the app.") to true
+            result?.outcome == LightPackageUninstallOutcome.AwaitingUserAction ->
+                "Confirm the uninstall in Android." to false
+            else -> "Uninstall is still being processed by Android." to false
+        }
+
+        if (terminal) {
+            installer.clearUninstallResult(pending.requestId)
+            store.clearPendingUninstall()
+        }
+        return ProcessingResult(message, changed = terminal)
+    }
+
+
     suspend fun forget() {
         clearPlayAuthentication()
         store.clearPendingInstall()
+        store.clearPendingUninstall()
         store.forget()
     }
 
@@ -270,6 +342,19 @@ class BorealisRepository(
                 LightPackageInstallOutcome.Failed,
                 LightPackageInstallOutcome.Cancelled -> InstallStage.ReportingResult
                 null -> InstallStage.Installing
+            },
+        )
+
+    private fun pendingUninstallProgress(pending: PendingUninstall, library: List<LibraryAppState>): UninstallProgress =
+        UninstallProgress(
+            displayName = library.firstOrNull { it.app.packageName == pending.packageName }?.app?.displayName
+                ?: pending.packageName,
+            stage = when (installer.uninstallResult(pending.requestId)?.outcome) {
+                LightPackageUninstallOutcome.AwaitingUserAction -> UninstallStage.AwaitingConfirmation
+                LightPackageUninstallOutcome.Uninstalled,
+                LightPackageUninstallOutcome.Failed,
+                LightPackageUninstallOutcome.Cancelled -> UninstallStage.ReportingResult
+                null -> UninstallStage.Starting
             },
         )
 

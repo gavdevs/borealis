@@ -112,6 +112,28 @@ class BorealisStore(private val dataStore: DataStore<Preferences>) {
         }
     }
 
+    suspend fun loadPendingUninstall(): PendingUninstall? {
+        val values = dataStore.data.first()
+        val packageName = values[PENDING_UNINSTALL_PACKAGE] ?: return null
+        val requestId = values[PENDING_UNINSTALL_REQUEST_ID] ?: return null
+        return PendingUninstall(packageName, requestId)
+    }
+
+    suspend fun savePendingUninstall(pending: PendingUninstall) {
+        dataStore.edit { values ->
+            values[PENDING_UNINSTALL_PACKAGE] = pending.packageName
+            values[PENDING_UNINSTALL_REQUEST_ID] = pending.requestId
+        }
+    }
+
+    suspend fun clearPendingUninstall() {
+        dataStore.edit { values ->
+            values.remove(PENDING_UNINSTALL_PACKAGE)
+            values.remove(PENDING_UNINSTALL_REQUEST_ID)
+        }
+    }
+
+
     private companion object {
         val INSTANCE_URL = stringPreferencesKey("instance_url")
         val DEVICE_ID = stringPreferencesKey("device_id")
@@ -124,6 +146,8 @@ class BorealisStore(private val dataStore: DataStore<Preferences>) {
         val PENDING_INSTALL_SESSION_ID = intPreferencesKey("pending_install_session_id")
         val PENDING_INSTALL_PACKAGE = stringPreferencesKey("pending_install_package")
         val PENDING_INSTALL_VERSION_CODE = longPreferencesKey("pending_install_version_code")
+        val PENDING_UNINSTALL_PACKAGE = stringPreferencesKey("pending_uninstall_package")
+        val PENDING_UNINSTALL_REQUEST_ID = intPreferencesKey("pending_uninstall_request_id")
         val PENDING_INSTANCE_URL = stringPreferencesKey("pending_instance_url")
         val PENDING_DEVICE_BEARER = stringPreferencesKey("pending_device_bearer")
         val PENDING_PAIRING_ID = stringPreferencesKey("pending_pairing_id")
@@ -142,10 +166,15 @@ class BorealisStore(private val dataStore: DataStore<Preferences>) {
         )
     }
 }
-
 data class PendingInstall(
     val jobId: String,
     val sessionId: Int,
     val packageName: String,
     val versionCode: Long,
 )
+
+data class PendingUninstall(
+    val packageName: String,
+    val requestId: Int,
+)
+

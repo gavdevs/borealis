@@ -27,6 +27,17 @@ data class InstallProgress(
     val download: ArtifactDownloadProgress? = null,
 )
 
+enum class UninstallStage {
+    Starting,
+    AwaitingConfirmation,
+    ReportingResult,
+}
+
+data class UninstallProgress(
+    val displayName: String,
+    val stage: UninstallStage,
+)
+
 sealed interface InstallPreparationResult {
     data class Submitted(
         val session: LightPackageInstallSession,
