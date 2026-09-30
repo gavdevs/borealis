@@ -91,14 +91,10 @@ ID and signing key for normal in-place updates.
 
 1. Review and commit the intended release changes on `main`. Set the semantic
    `versionName` and a strictly increasing `versionCode` in `app/lighttool.toml`
-   before each new release tag, including prereleases. The latest testing build
-   is `0.1.6-alpha.4`, version code `10`. It replaces the curator gate with
-   personal-library Install/Update actions, persistent installed/update status,
-   and real download progress plus explicit installation stages. Alpha.3 already
-   passed phone-local Google sign-in and saved-session reuse on the LP3; that
-   authentication transport and profile are unchanged. Alpha.4 has installed MIKU
-   on the physical LP3. The renamed store candidate is `0.1.7`, version code `12`:
-   a minified, normally signed build, initially created as a **draft** for review.
+   before each new release tag, including prereleases. The previous latest release
+   is `0.1.7`, version code `12`, already published as Latest. The next stable
+   candidate is `0.1.8`, version code `13`: on-device uninstall for installed
+   library apps plus the tink allow-list restoration needed by the SDK patch.
    A successful unoptimized alpha does not establish that the minified candidate
    works. Never move a failed tag onto fixed source.
 2. Push the reviewed commit to `main`. For stable release candidates, wait for
@@ -111,15 +107,15 @@ ID and signing key for normal in-place updates.
    commit. For the current candidate, after confirming `HEAD` is that commit:
 
    ```sh
-   git tag -a v0.1.7 -m "Borealis v0.1.7"
-   git push origin refs/tags/v0.1.7
+   git tag -a v0.1.8 -m "Borealis v0.1.8"
+   git push origin refs/tags/v0.1.8
    ```
 
    The tag push starts `Android release` on GitHub-hosted runners. A manual
    run can retry the same existing tag if no release for it exists:
 
    ```sh
-   gh workflow run release.yml --ref main -f tag=v0.1.7
+   gh workflow run release.yml --ref main -f tag=v0.1.8
    ```
 
 4. Download the resulting prerelease or draft and verify the APK

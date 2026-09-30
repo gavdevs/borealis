@@ -2,8 +2,8 @@
 id = "com.loosewire.borealis"
 label = "Borealis"
 icon = "@mipmap/ic_borealis_launcher"
-versionCode = 12
-versionName = "0.1.7"
+versionCode = 13
+versionName = "0.1.8"
 permissions = ["android.permission.INTERNET", "android.permission.ACCESS_NETWORK_STATE", "android.permission.WAKE_LOCK"]
 capabilities = ["package-install-request"]
 serverPackage = "com.lightos"
