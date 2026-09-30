@@ -10,11 +10,12 @@ this snapshot was prepared.
 
 This is an unsupported, sideload-only extension, not an approved Light Phone
 capability or an upstream contribution. It adds the `package-install-request`
-capability, installer facade/receiver, and exact GPlayAPI/protobuf/Tink dependency
-allowlist entries. Android still controls install permission and user
-confirmation; requesting unattended updates does not guarantee them. No LightOS
-server/protocol changes are included. Physical Light Phone behavior and official
-builder compatibility are not established by this patch.
+capability, installer/uninstaller facades and receivers, and exact
+GPlayAPI/protobuf/Tink dependency allowlist entries. Android still controls
+install permission and user confirmation (installs and uninstalls always show
+Android's own confirmation); requesting unattended updates does not guarantee
+them. No LightOS server/protocol changes are included. Physical Light Phone
+behavior and official builder compatibility are not established by this patch.
 
 The additive `sdk-extension/client/` sources supply the experimental native
 Google Play sign-in and credential-storage facade, plus its unit tests. They
@@ -55,9 +56,10 @@ validate the source overlay.
 The snapshot was checked with `git apply --cached --check --whitespace=error-all`
 against an isolated temporary index loaded from the pinned base. This verifies
 patch applicability without altering the working SDK checkout. The patch is an
-exact snapshot of 11 installer-related files: three plugin sources, three plugin
-tests, the `LightActivity` accessor, three client installer sources, and one
-client test. All unrelated `tool/` changes are excluded.
+exact snapshot of 12 installer-related files: three plugin sources, three plugin
+tests, the `LightActivity` accessor, four client installer sources (install and
+uninstall facades/receivers plus the capability gate), and one client test. All
+unrelated `tool/` changes are excluded.
 
 The commands below are for a suitably provisioned build runner. Use JDK 17 and
 an Android SDK, run one build at a time, and keep the resource limits below.

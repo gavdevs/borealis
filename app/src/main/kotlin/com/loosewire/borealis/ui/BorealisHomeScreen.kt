@@ -40,6 +40,8 @@ import com.loosewire.borealis.data.PairingStatus
 import com.loosewire.borealis.data.PendingPairingSession
 import com.loosewire.borealis.install.InstallProgress
 import com.loosewire.borealis.install.InstallStage
+import com.loosewire.borealis.install.UninstallProgress
+import com.loosewire.borealis.install.UninstallStage
 import com.thelightphone.sdk.InitialScreen
 import com.thelightphone.sdk.LightScreen
 import com.thelightphone.sdk.LightViewModel
@@ -78,6 +80,8 @@ data class BorealisUiState(
     val pairingStatus: PairingStatus? = null,
     val library: List<LibraryAppState> = emptyList(),
     val installProgress: InstallProgress? = null,
+    val uninstallProgress: UninstallProgress? = null,
+    val pendingUninstallConfirm: LibraryApp? = null,
     val installAccessGranted: Boolean = false,
     val googleAccountStatus: GoogleAccountStatus = GoogleAccountStatus.Unavailable,
     val loading: Boolean = true,
@@ -112,6 +116,7 @@ class BorealisHomeViewModel(
                         pendingPairing = local.pendingPairing,
                         library = local.library,
                         installProgress = local.installProgress,
+                        uninstallProgress = local.uninstallProgress,
                         installAccessGranted = repository.canRequestPackageInstalls,
                         googleAccountStatus = googleAccountStatus,
                         loading = false,
@@ -119,6 +124,7 @@ class BorealisHomeViewModel(
                     )
                 }
                 if (local.pendingPairing != null) startPolling()
+                if (local.pendingInstall != null || local.pendingUninstall != null) startInstallPolling()
                 if (local.session != null) syncInternal()
             } catch (error: CancellationException) {
                 throw error
@@ -200,6 +206,38 @@ class BorealisHomeViewModel(
         }
     }
 
+    fun confirmUninstall(app: LibraryApp) {
+        _uiState.update { it.copy(pendingUninstallConfirm = app) }
+    }
+
+    fun cancelUninstall() {
+        _uiState.update { it.copy(pendingUninstallConfirm = null) }
+    }
+
+    fun startUninstall(app: LibraryApp) {
+        if (requestJob?.isActive == true || _uiState.value.uninstallProgress != null) return
+        _uiState.update {
+            it.copy(
+                loading = true,
+                errorMessage = null,
+                statusMessage = null,
+                pendingUninstallConfirm = null,
+                uninstallProgress = UninstallProgress(app.displayName, UninstallStage.Starting),
+            )
+        }
+        requestJob = viewModelScope.launch(Dispatchers.IO) {
+            repository.uninstallLibraryApp(app.packageName).fold(
+                onSuccess = { result ->
+                    _uiState.update { it.copy(loading = false, statusMessage = result.message) }
+                    syncInternal()
+                },
+                onFailure = {
+                    recover(it, "Could not uninstall ${app.displayName}.")
+                },
+            )
+        }
+    }
+
     fun openInstallSettings() {
         if (!repository.openInstallAccessSettings()) {
             _uiState.update { it.copy(errorMessage = "Android could not open the install-access setting.") }
@@ -236,12 +274,13 @@ class BorealisHomeViewModel(
                     session = snapshot.session,
                     library = snapshot.library,
                     installProgress = snapshot.installProgress,
+                    uninstallProgress = snapshot.uninstallProgress,
                     installAccessGranted = repository.canRequestPackageInstalls,
                     loading = false,
                     errorMessage = null,
                 )
             }
-            if (snapshot.pendingInstall != null) startInstallPolling()
+            if (snapshot.pendingInstall != null || snapshot.pendingUninstall != null) startInstallPolling()
         } catch (error: CancellationException) {
             throw error
         } catch (error: Exception) {
@@ -258,7 +297,7 @@ class BorealisHomeViewModel(
             null
         }
         if (local != null) {
-            _uiState.update { it.copy(library = local.library, installProgress = local.installProgress) }
+            _uiState.update { it.copy(library = local.library, installProgress = local.installProgress, uninstallProgress = local.uninstallProgress) }
             if (local.pendingInstall != null) startInstallPolling()
         }
         fail(error, fallback)
@@ -273,9 +312,18 @@ class BorealisHomeViewModel(
                     repository.reconcilePendingInstall()?.let { result ->
                         _uiState.update { it.copy(statusMessage = result.message) }
                     }
+                    repository.reconcilePendingUninstall()?.let { result ->
+                        _uiState.update { it.copy(statusMessage = result.message) }
+                    }
                     val local = repository.load()
-                    _uiState.update { it.copy(library = local.library, installProgress = local.installProgress) }
-                    if (local.pendingInstall == null) {
+                    _uiState.update {
+                        it.copy(
+                            library = local.library,
+                            installProgress = local.installProgress,
+                            uninstallProgress = local.uninstallProgress,
+                        )
+                    }
+                    if (local.pendingInstall == null && local.pendingUninstall == null) {
                         syncInternal()
                         return@launch
                     }
@@ -350,13 +398,20 @@ class BorealisHomeScreen(sealedActivity: SealedLightActivity) :
                             state.loading && state.session == null -> CenterMessage("Working…")
                             state.pendingPairing != null -> PairingContent(state)
                             state.session == null -> UnpairedContent()
-                            else -> ReadyContent(state, viewModel::install)
+                            else -> ReadyContent(state, viewModel::install, viewModel::confirmUninstall)
                         }
                     }
                     ActionBar(state)
                 }
                 state.errorMessage?.let { message ->
                     LightFullscreenModal(message = message, onClose = viewModel::dismissError)
+                }
+                state.pendingUninstallConfirm?.let { app ->
+                    UninstallConfirmOverlay(
+                        app = app,
+                        onCancel = viewModel::cancelUninstall,
+                        onConfirm = { viewModel.startUninstall(app) },
+                    )
                 }
             }
         }
@@ -370,7 +425,7 @@ class BorealisHomeScreen(sealedActivity: SealedLightActivity) :
         )
         val items = when {
             state.loading -> emptyList()
-            state.installProgress != null -> listOf(
+            state.installProgress != null || state.uninstallProgress != null -> listOf(
                 LightBarButton.LightIcon(
                     icon = LightIcons.REFRESH,
                     onClick = viewModel::sync,
@@ -483,6 +538,7 @@ private fun PairingContent(state: BorealisUiState) {
 private fun ReadyContent(
     state: BorealisUiState,
     onInstall: (LibraryApp) -> Unit,
+    onUninstall: (LibraryApp) -> Unit,
 ) {
     Column(
         modifier = Modifier.fillMaxSize().padding(horizontal = 1f.gridUnitsAsDp()),
@@ -493,7 +549,8 @@ private fun ReadyContent(
             modifier = Modifier.padding(top = 0.75f.gridUnitsAsDp()),
         )
         state.installProgress?.let { InstallProgressContent(it) }
-        if (state.loading && state.installProgress == null) {
+        state.uninstallProgress?.let { UninstallProgressContent(it) }
+        if (state.loading && state.installProgress == null && state.uninstallProgress == null) {
             LightText("Syncing library and checking for updates…", LightTextVariant.Detail)
             BusyBar()
         }
@@ -510,8 +567,10 @@ private fun ReadyContent(
             state.library.forEach { app ->
                 LibraryRow(
                     state = app,
-                    enabled = !state.loading && state.installProgress == null && state.installAccessGranted,
+                    enabled = !state.loading && state.installProgress == null &&
+                        state.uninstallProgress == null && state.installAccessGranted,
                     onClick = { onInstall(app.app) },
+                    onUninstall = { onUninstall(app.app) },
                 )
             }
         }
@@ -519,13 +578,19 @@ private fun ReadyContent(
 }
 
 @Composable
-private fun LibraryRow(state: LibraryAppState, enabled: Boolean, onClick: () -> Unit) {
+private fun LibraryRow(
+    state: LibraryAppState,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    onUninstall: () -> Unit,
+) {
     val app = state.app
     val action = when (state.status) {
         LibraryAppStatus.NotInstalled -> "INSTALL"
         LibraryAppStatus.UpdateAvailable -> "UPDATE"
         else -> null
     }
+    val isInstalled = state.installedVersionCode != null
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -549,6 +614,20 @@ private fun LibraryRow(state: LibraryAppState, enabled: Boolean, onClick: () -> 
                 )
             }
             if (action != null) LightText(action, LightTextVariant.Button)
+        }
+        if (isInstalled) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {}
+                LightText(
+                    text = "UNINSTALL",
+                    variant = LightTextVariant.Fine,
+                    modifier = Modifier
+                        .then(if (enabled) {
+                            Modifier.lightClickable(onClickLabel = "Uninstall ${app.displayName}", onClick = onUninstall)
+                        } else Modifier)
+                        .padding(top = 0.25f.gridUnitsAsDp()),
+                )
+            }
         }
         Box(
             modifier = Modifier
@@ -628,4 +707,62 @@ internal fun downloadBytes(bytes: Long): String {
     if (safe < 1_048_576L) return "${safe / 1024} KB"
     val tenths = (safe / 1_048_576L) * 10L + (safe % 1_048_576L) * 10L / 1_048_576L
     return "${tenths / 10}.${tenths % 10} MB"
+}
+
+/** Uninstall confirmations stay separate from [LightFullscreenModal], which has no action button. */
+@Composable
+private fun UninstallConfirmOverlay(
+    app: LibraryApp,
+    onCancel: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(LightThemeTokens.colors.background),
+    ) {
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .padding(horizontal = 1f.gridUnitsAsDp()),
+            contentAlignment = Alignment.Center,
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                LightText(
+                    text = "UNINSTALL ${app.displayName.uppercase()}?",
+                    variant = LightTextVariant.Heading,
+                    align = TextAlign.Center,
+                )
+                LightText(
+                    text = "This removes the app from your phone. It stays in your Borealis library and you can reinstall it later.",
+                    variant = LightTextVariant.Copy,
+                    align = TextAlign.Center,
+                    modifier = Modifier.padding(top = 1f.gridUnitsAsDp()),
+                )
+            }
+        }
+        LightBottomBar(
+            items = listOf(
+                LightBarButton.Text(text = "CANCEL", onClick = onCancel),
+                LightBarButton.Text(text = "UNINSTALL", onClick = onConfirm),
+            ),
+        )
+    }
+}
+
+@Composable
+private fun UninstallProgressContent(progress: UninstallProgress) {
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 0.5f.gridUnitsAsDp())) {
+        LightText(progress.displayName, LightTextVariant.Copy, maxLines = 2)
+        LightText(
+            text = when (progress.stage) {
+                UninstallStage.Starting -> "Asking Android to uninstall…"
+                UninstallStage.AwaitingConfirmation -> "Confirm the uninstall in Android."
+                UninstallStage.ReportingResult -> "Updating library…"
+            },
+            variant = LightTextVariant.Detail,
+        )
+        if (progress.stage == UninstallStage.Starting) BusyBar()
+    }
 }

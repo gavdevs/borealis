@@ -1,5 +1,5 @@
 diff --git a/plugin/src/main/kotlin/com/thelightphone/plugin/LightSdkPlugin.kt b/plugin/src/main/kotlin/com/thelightphone/plugin/LightSdkPlugin.kt
-index 594de64443f63cbbbe0d7582e9cd9160d7925f0f..dbf2edd2a644f3af65fecce16980df3ecd63377f 100644
+index 594de64443f63cbbbe0d7582e9cd9160d7925f0f..8a4496e1f6e59df6be34975773153fd9f19d5d8a 100644
 --- a/plugin/src/main/kotlin/com/thelightphone/plugin/LightSdkPlugin.kt
 +++ b/plugin/src/main/kotlin/com/thelightphone/plugin/LightSdkPlugin.kt
 @@ -16,6 +16,12 @@ class LightSdkPlugin : Plugin<Project> {
@@ -77,31 +77,10 @@ index 594de64443f63cbbbe0d7582e9cd9160d7925f0f..dbf2edd2a644f3af65fecce16980df3e
                      val tag = if (isKsp) "unexpected resolved KSP dependency" else "unexpected resolved dependency — possible substitution"
                      violations.add("  ${config.name}: $resolvedCoord:${dep.moduleVersion} ($tag)")
 diff --git a/plugin/src/main/kotlin/com/thelightphone/plugin/LightToolMetadata.kt b/plugin/src/main/kotlin/com/thelightphone/plugin/LightToolMetadata.kt
-index ca15a3fdcb1c38a475762eadbe4a814d5ff7ae8b..d0055c522502820e8c075645de3d83d30e1be820 100644
+index ca15a3fdcb1c38a475762eadbe4a814d5ff7ae8b..a9bc93a51c978b25cc2c0d6970eb4a1cbb3d1c7a 100644
 --- a/plugin/src/main/kotlin/com/thelightphone/plugin/LightToolMetadata.kt
 +++ b/plugin/src/main/kotlin/com/thelightphone/plugin/LightToolMetadata.kt
-@@ -96,7 +96,8 @@ data class LightToolMetadata(
-         private fun validateVersionName(value: String?): String {
-             val v = value ?: throw LightToolMetadataException("tool.versionName is required")
-             require(LightToolPolicy.VERSION_NAME_PATTERN.matches(v)) {
--                "tool.versionName must be major.minor.patch semver; got '$v'"
-+                "tool.versionName must be major.minor.patch, optionally followed by " +
-+                        "-alpha.N, -beta.N, or -rc.N (N >= 1, no leading zeroes); got '$v'"
-             }
-             return v
-         }
-@@ -179,8 +180,9 @@ class LightToolMetadataException(message: String) : RuntimeException(message)
- object LightToolPolicy {
-     val TOOL_ID_PATTERN: Regex = Regex("^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$")
-     val ICON_PATTERN: Regex = Regex("^@[a-z]+/[a-z0-9_]+$")
-+    // Sideload builds may use numbered alpha, beta, or release-candidate versions.
-     val VERSION_NAME_PATTERN: Regex =
--        Regex("""^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$""")
-+        Regex("""^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-(?:alpha|beta|rc)\.[1-9][0-9]*)?$""")
-     val TOOL_LABEL_PATTERN: Regex = Regex("^[^\\x00-\\x1f<>]{1,50}$")
-     const val MAX_VERSION_CODE: Int = 2_100_000_000
-     val ALLOWED_ORIENTATIONS: Set<String> = setOf("portrait")
-@@ -200,8 +202,12 @@ object LightToolPolicy {
+@@ -200,8 +200,12 @@ object LightToolPolicy {
      )
  
      const val DETACHED_AUDIO: String = "detached-audio"
@@ -115,7 +94,7 @@ index ca15a3fdcb1c38a475762eadbe4a814d5ff7ae8b..d0055c522502820e8c075645de3d83d3
  
      /**
       * Permissions a capability contributes to the generated manifest. These are
-@@ -214,6 +220,11 @@ object LightToolPolicy {
+@@ -214,6 +218,11 @@ object LightToolPolicy {
              "android.permission.FOREGROUND_SERVICE",
              "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
          ),
@@ -128,34 +107,37 @@ index ca15a3fdcb1c38a475762eadbe4a814d5ff7ae8b..d0055c522502820e8c075645de3d83d3
  
      /**
 diff --git a/plugin/src/main/kotlin/com/thelightphone/plugin/ManifestGenerator.kt b/plugin/src/main/kotlin/com/thelightphone/plugin/ManifestGenerator.kt
-index cfed5953310dd4f5297658498322216ad8a3de8d..46298eac85927b865c3ad1bdbd66ee6329e543de 100644
+index cfed5953310dd4f5297658498322216ad8a3de8d..a37a9aacb45e0cc8a44af96a2f8577f32277d5c5 100644
 --- a/plugin/src/main/kotlin/com/thelightphone/plugin/ManifestGenerator.kt
 +++ b/plugin/src/main/kotlin/com/thelightphone/plugin/ManifestGenerator.kt
-@@ -65,6 +65,13 @@ object ManifestGenerator {
+@@ -65,6 +65,16 @@ object ManifestGenerator {
                  """        </service>""",
              )
          )
-+        val packageInstallReceiver = marginBlock(
++        val packageInstallReceivers = marginBlock(
 +            if (LightToolPolicy.PACKAGE_INSTALL_REQUEST !in metadata.capabilities) emptyList() else listOf(
 +                """        <receiver""",
 +                """            android:name="com.thelightphone.sdk.install.LightPackageInstallReceiver"""",
++                """            android:exported="false" />""",
++                """        <receiver""",
++                """            android:name="com.thelightphone.sdk.install.LightPackageUninstallReceiver"""",
 +                """            android:exported="false" />""",
 +            )
 +        )
          appendLine(
              """
              |    <application
-@@ -95,7 +102,7 @@ object ManifestGenerator {
+@@ -95,7 +105,7 @@ object ManifestGenerator {
              |            <meta-data
              |                android:name="com.thelightphone.sdk.SDK_VERSION"
              |                android:value="${'$'}{sdkVersion}" />
 -            |        </receiver>$detachedAudioService
-+            |        </receiver>$detachedAudioService$packageInstallReceiver
++            |        </receiver>$detachedAudioService$packageInstallReceivers
              |    </application>
              |    <queries>
              |        <intent>
 diff --git a/plugin/src/test/kotlin/com/thelightphone/plugin/LightSdkPluginValidationTest.kt b/plugin/src/test/kotlin/com/thelightphone/plugin/LightSdkPluginValidationTest.kt
-index b3ab6c0cb5db0c761c96f7d6bc2a7965f13ca841..f493c590b38a5b63103355b0b14219d377021cc4 100644
+index b3ab6c0cb5db0c761c96f7d6bc2a7965f13ca841..491e87882331b5a074114df13b0891efe064581f 100644
 --- a/plugin/src/test/kotlin/com/thelightphone/plugin/LightSdkPluginValidationTest.kt
 +++ b/plugin/src/test/kotlin/com/thelightphone/plugin/LightSdkPluginValidationTest.kt
 @@ -373,6 +373,39 @@ class LightSdkPluginValidationTest {
@@ -199,7 +181,7 @@ index b3ab6c0cb5db0c761c96f7d6bc2a7965f13ca841..f493c590b38a5b63103355b0b14219d3
      // INTERNAL_CONFIG_PREFIXES no longer skips ksp
      // ---------------------------------------------------------------------
 diff --git a/plugin/src/test/kotlin/com/thelightphone/plugin/LightToolMetadataTest.kt b/plugin/src/test/kotlin/com/thelightphone/plugin/LightToolMetadataTest.kt
-index dde2aa033e80cf425ca4b5847ee06d67d593dedd..f21b8464a24788db52b919fdccdffa109068a689 100644
+index dde2aa033e80cf425ca4b5847ee06d67d593dedd..474b3089113573204927e6900644bd5fa4acdad8 100644
 --- a/plugin/src/test/kotlin/com/thelightphone/plugin/LightToolMetadataTest.kt
 +++ b/plugin/src/test/kotlin/com/thelightphone/plugin/LightToolMetadataTest.kt
 @@ -139,6 +139,40 @@ class LightToolMetadataTest {
@@ -243,68 +225,11 @@ index dde2aa033e80cf425ca4b5847ee06d67d593dedd..f21b8464a24788db52b919fdccdffa10
      @Test
      fun `missing file fails`(@TempDir dir: Path) {
          val file = dir.resolve("lighttool.toml").toFile()
-@@ -224,13 +258,13 @@ class LightToolMetadataTest {
-     @Test
--    fun `versionName with pre-release suffix fails`(@TempDir dir: Path) {
-+    fun `versionName with unnumbered pre-release suffix fails`(@TempDir dir: Path) {
-         val file = writeToml(dir, """
-             [tool]
-             id = "com.example.mytool"
-             label = "X"
-             versionCode = 1
--            versionName = "1.2.3-rc.1"
-+            versionName = "1.2.3-beta"
-             serverPackage = "com.lightos"
-         """.trimIndent())
-         val ex = assertThrows<LightToolMetadataException> { LightToolMetadata.parse(file) }
-         assert(ex.message!!.contains("versionName"))
-     }
-@@ -238,3 +272,40 @@ class LightToolMetadataTest {
-+    @Test
-+    fun `plain and numbered pre-release versions are accepted`(@TempDir dir: Path) {
-+        listOf("0.0.0", "1.2.3", "0.1.6-alpha.1", "1.2.3-beta.12", "1.2.3-rc.1").forEach { version ->
-+            val file = writeToml(dir, """
-+                [tool]
-+                id = "com.example.mytool"
-+                label = "X"
-+                versionCode = 1
-+                versionName = "$version"
-+                serverPackage = "com.lightos"
-+            """.trimIndent())
-+            assertEquals(version, LightToolMetadata.parse(file).versionName)
-+        }
-+    }
-+
-+    @Test
-+    fun `unsupported pre-release and noncanonical version numbers fail`(@TempDir dir: Path) {
-+        listOf(
-+            "1.2.3-alpha", "1.2.3-rc", "1.2.3-beta.", "1.2.3-beta.0", "1.2.3-beta.01",
-+            "1.2.3-beta.-1", "1.2.3-beta.+1", "1.2.3-beta.1.2", "1.2.3-beta.1-rc.1",
-+            "1.2.3-BETA.1", "1.2.3-dev.1", "1.2.3+build.1", "1.2.3-beta.1+build.1",
-+            "01.2.3", "1.02.3", "1.2.03", "01.2.3-beta.1", "1.02.3-beta.1", "1.2.03-beta.1",
-+            "1.2.3-beta.١", "١.2.3", " 1.2.3-beta.1", "1.2.3-beta.1 ",
-+        ).forEach { version ->
-+            val file = writeToml(dir, """
-+                [tool]
-+                id = "com.example.mytool"
-+                label = "X"
-+                versionCode = 1
-+                versionName = "$version"
-+                serverPackage = "com.lightos"
-+            """.trimIndent())
-+            val ex = assertThrows<LightToolMetadataException> { LightToolMetadata.parse(file) }
-+            assert(ex.message!!.contains("versionName")) { "accepted or misreported $version: ${ex.message}" }
-+        }
-+    }
-+
-     @Test
-     fun `label with angle bracket fails`(@TempDir dir: Path) {
-         val file = writeToml(dir, """
 diff --git a/plugin/src/test/kotlin/com/thelightphone/plugin/ManifestGeneratorTest.kt b/plugin/src/test/kotlin/com/thelightphone/plugin/ManifestGeneratorTest.kt
-index f57fd0ce866d0abfdda2b8567932e77a7a6599a8..644c72d91e29cb754a43489b35dbb8a5d8314bc8 100644
+index f57fd0ce866d0abfdda2b8567932e77a7a6599a8..5045d41b7c26f7bdfb4f5a26324256bcd8be43d1 100644
 --- a/plugin/src/test/kotlin/com/thelightphone/plugin/ManifestGeneratorTest.kt
 +++ b/plugin/src/test/kotlin/com/thelightphone/plugin/ManifestGeneratorTest.kt
-@@ -131,6 +131,38 @@ class ManifestGeneratorTest {
+@@ -131,6 +131,40 @@ class ManifestGeneratorTest {
          assertTrue(xml.contains("""<action android:name="androidx.media3.session.MediaSessionService" />"""))
      }
  
@@ -318,17 +243,18 @@ index f57fd0ce866d0abfdda2b8567932e77a7a6599a8..644c72d91e29cb754a43489b35dbb8a5
 +    }
 +
 +    @Test
-+    fun `package install capability emits marker and non-exported receiver`() {
++    fun `package install capability emits marker and non-exported receivers`() {
 +        val xml = render(capabilities = listOf("package-install-request"))
 +
 +        assertTrue(xml.contains("""android:name="com.thelightphone.sdk.CAPABILITY_PACKAGE_INSTALL_REQUEST""""))
-+        assertTrue(xml.contains("""android:name="com.thelightphone.sdk.install.LightPackageInstallReceiver""""))
-+        assertTrue(
-+            Regex(
-+                """<receiver\s+android:name="com\.thelightphone\.sdk\.install\.LightPackageInstallReceiver"\s+android:exported="false"\s*/>"""
-+            ).containsMatchIn(xml),
-+            "expected a non-exported install receiver; got:\n$xml",
-+        )
++        listOf("LightPackageInstallReceiver", "LightPackageUninstallReceiver").forEach { receiver ->
++            assertTrue(
++                Regex(
++                    """<receiver\s+android:name="com\.thelightphone\.sdk\.install\.$receiver"\s+android:exported="false"\s*/>"""
++                ).containsMatchIn(xml),
++                "expected a non-exported $receiver; got:\n$xml",
++            )
++        }
 +    }
 +
 +    @Test
@@ -338,6 +264,7 @@ index f57fd0ce866d0abfdda2b8567932e77a7a6599a8..644c72d91e29cb754a43489b35dbb8a5
 +        assertFalse(xml.contains("android.permission.REQUEST_INSTALL_PACKAGES"))
 +        assertFalse(xml.contains("CAPABILITY_PACKAGE_INSTALL_REQUEST"))
 +        assertFalse(xml.contains("LightPackageInstallReceiver"))
++        assertFalse(xml.contains("LightPackageUninstallReceiver"))
 +    }
 +
      @Test
@@ -452,10 +379,10 @@ index 0000000000000000000000000000000000000000..d9fb36992a65cb856525440ef3ca4b7a
 +}
 diff --git a/sdk/client/src/main/kotlin/com/thelightphone/sdk/install/LightPackageInstaller.kt b/sdk/client/src/main/kotlin/com/thelightphone/sdk/install/LightPackageInstaller.kt
 new file mode 100644
-index 0000000000000000000000000000000000000000..87a5a6732b6663529244acb63b1038a99ba11acb
+index 0000000000000000000000000000000000000000..f566ee4f7afd84f00835027ce6a2b434ed93184b
 --- /dev/null
 +++ b/sdk/client/src/main/kotlin/com/thelightphone/sdk/install/LightPackageInstaller.kt
-@@ -0,0 +1,311 @@
+@@ -0,0 +1,443 @@
 +package com.thelightphone.sdk.install
 +
 +import android.app.PendingIntent
@@ -499,6 +426,20 @@ index 0000000000000000000000000000000000000000..87a5a6732b6663529244acb63b1038a9
 +    Cancelled,
 +    Failed,
 +}
++
++enum class LightPackageUninstallOutcome {
++    AwaitingUserAction,
++    Uninstalled,
++    Cancelled,
++    Failed,
++}
++
++data class LightPackageUninstallResult(
++    val requestId: Int,
++    val packageName: String?,
++    val outcome: LightPackageUninstallOutcome,
++    val message: String?,
++)
 +
 +data class LightPackageInstallResult(
 +    val sessionId: Int,
@@ -641,12 +582,86 @@ index 0000000000000000000000000000000000000000..87a5a6732b6663529244acb63b1038a9
 +        androidContext.requirePackageInstallCapability()
 +        LightPackageInstallResultStore.clear(androidContext, sessionId)
 +    }
++
++    /**
++     * Starts a PackageInstaller uninstall for an already-installed package. Android
++     * shows its own confirmation, including when Borealis is the installer of record.
++     * Returns the session id used to track the request via [uninstallResult]; Android
++     * may never deliver a result broadcast (only STATUS_PENDING_USER_ACTION is
++     * guaranteed), so callers MUST reconcile against [installedPackage].
++     */
++    suspend fun uninstall(packageName: String): LightPackageInstallSession =
++        withContext(Dispatchers.IO) {
++            androidContext.requirePackageInstallCapability()
++            validateUninstallRequest(packageName)
++            LightPackageUninstallResultStore.clear(androidContext, uninstallRequestId(packageName))
++            val callback = Intent(
++                androidContext,
++                LightPackageUninstallReceiver::class.java,
++            ).apply {
++                putExtra(EXTRA_LIGHT_UNINSTALL_REQUEST_ID, uninstallRequestId(packageName))
++                putExtra(EXTRA_LIGHT_EXPECTED_PACKAGE, packageName)
++            }
++            val pending = PendingIntent.getBroadcast(
++                androidContext,
++                uninstallRequestId(packageName),
++                callback,
++                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
++            )
++            try {
++                androidContext.packageManager.packageInstaller.uninstall(
++                    packageName,
++                    pending.intentSender,
++                )
++            } catch (error: Exception) {
++                throw LightPackageInstallException("Could not start the uninstall.", error)
++            }
++            LightPackageInstallSession(uninstallRequestId(packageName))
++        }
++
++    fun uninstallResult(requestId: Int): LightPackageUninstallResult? {
++        androidContext.requirePackageInstallCapability()
++        return LightPackageUninstallResultStore.read(androidContext, requestId)
++    }
++
++    fun clearUninstallResult(requestId: Int) {
++        androidContext.requirePackageInstallCapability()
++        LightPackageUninstallResultStore.clear(androidContext, requestId)
++    }
++
++    /** Re-derives the deterministic id used by [uninstall], [uninstallResult], and [clearUninstallResult]. */
++    fun uninstallRequestId(packageName: String): Int {
++        androidContext.requirePackageInstallCapability()
++        return uninstallRequestIdFor(packageName)
++    }
 +}
 +
 +internal const val EXTRA_LIGHT_SESSION_ID =
 +    "com.thelightphone.sdk.install.extra.SESSION_ID"
 +internal const val EXTRA_LIGHT_EXPECTED_PACKAGE =
 +    "com.thelightphone.sdk.install.extra.EXPECTED_PACKAGE"
++
++internal const val EXTRA_LIGHT_UNINSTALL_REQUEST_ID =
++    "com.thelightphone.sdk.install.extra.UNINSTALL_REQUEST_ID"
++
++/**
++ * PackageInstaller.Uninstall requires a status receiver even though result delivery
++ * is unreliable beyond the initial pending-user-action status.
++ */
++internal fun uninstallRequestIdFor(packageName: String): Int {
++    val digest = MessageDigest.getInstance("SHA-256")
++        .digest("com.thelightphone.sdk.install.uninstall:$packageName".toByteArray(Charsets.UTF_8))
++    return ((digest[0].toInt() and 0x7F or 0x40) shl 24) or
++        ((digest[1].toInt() and 0xFF) shl 16) or
++        ((digest[2].toInt() and 0xFF) shl 8) or
++        (digest[3].toInt() and 0xFF)
++}
++
++internal fun validateUninstallRequest(packageName: String) {
++    if (packageName.isBlank() || packageName.any(Char::isWhitespace)) {
++        throw LightPackageInstallException("A package name is required.")
++    }
++}
 +
 +private val INSTALL_NAME_PATTERN = Regex("^[A-Za-z0-9._-]+\\.apk$")
 +
@@ -767,6 +782,134 @@ index 0000000000000000000000000000000000000000..87a5a6732b6663529244acb63b1038a9
 +
 +    private fun prefix(sessionId: Int): String = "$sessionId:"
 +}
++
++internal object LightPackageUninstallResultStore {
++    private const val PREFERENCES = "LIGHT_PACKAGE_UNINSTALL_RESULTS"
++
++    fun write(context: Context, result: LightPackageUninstallResult) {
++        val prefix = prefix(result.requestId)
++        context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit()
++            .putString(prefix + "outcome", result.outcome.name)
++            .apply {
++                if (result.packageName == null) remove(prefix + "package")
++                else putString(prefix + "package", result.packageName)
++                if (result.message == null) remove(prefix + "message")
++                else putString(prefix + "message", result.message)
++            }
++            .apply()
++    }
++
++    fun read(context: Context, requestId: Int): LightPackageUninstallResult? {
++        val prefix = prefix(requestId)
++        val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
++        val outcome = preferences.getString(prefix + "outcome", null)
++            ?.let { stored ->
++                LightPackageUninstallOutcome.entries.firstOrNull { it.name == stored }
++            }
++            ?: return null
++        return LightPackageUninstallResult(
++            requestId = requestId,
++            packageName = preferences.getString(prefix + "package", null),
++            outcome = outcome,
++            message = preferences.getString(prefix + "message", null),
++        )
++    }
++
++    fun clear(context: Context, requestId: Int) {
++        val prefix = prefix(requestId)
++        context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit()
++            .remove(prefix + "outcome")
++            .remove(prefix + "package")
++            .remove(prefix + "message")
++            .apply()
++    }
++
++    private fun prefix(requestId: Int): String = "$requestId:"
++}
+diff --git a/sdk/client/src/main/kotlin/com/thelightphone/sdk/install/LightPackageUninstallReceiver.kt b/sdk/client/src/main/kotlin/com/thelightphone/sdk/install/LightPackageUninstallReceiver.kt
+new file mode 100644
+index 0000000000000000000000000000000000000000..25b495d1cb4793a18abfe11156c64f2de009172e
+--- /dev/null
++++ b/sdk/client/src/main/kotlin/com/thelightphone/sdk/install/LightPackageUninstallReceiver.kt
+@@ -0,0 +1,78 @@
++package com.thelightphone.sdk.install
++
++import android.content.BroadcastReceiver
++import android.content.Context
++import android.content.Intent
++import android.content.pm.PackageInstaller
++
++/**
++ * Receives PackageInstaller uninstall status. Delivery is unreliable: Android
++ * guarantees the STATUS_PENDING_USER_ACTION broadcast but may never send a
++ * final one, so tracking code must also reconcile against the package list.
++ */
++class LightPackageUninstallReceiver : BroadcastReceiver() {
++    override fun onReceive(context: Context, intent: Intent) {
++        val requestId = intent.getIntExtra(EXTRA_LIGHT_UNINSTALL_REQUEST_ID, -1)
++        if (requestId < 0) return
++
++        val packageName = intent.getStringExtra(PackageInstaller.EXTRA_PACKAGE_NAME)
++            ?: intent.getStringExtra(EXTRA_LIGHT_EXPECTED_PACKAGE)
++        val status = intent.getIntExtra(
++            PackageInstaller.EXTRA_STATUS,
++            PackageInstaller.STATUS_FAILURE,
++        )
++
++        if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
++            LightPackageUninstallResultStore.write(
++                context,
++                LightPackageUninstallResult(
++                    requestId = requestId,
++                    packageName = packageName,
++                    outcome = LightPackageUninstallOutcome.AwaitingUserAction,
++                    message = null,
++                ),
++            )
++            val confirmation = intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java)
++            if (confirmation != null) {
++                confirmation.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
++                runCatching { context.startActivity(confirmation) }
++                    .onFailure { error ->
++                        LightPackageUninstallResultStore.write(
++                            context,
++                            LightPackageUninstallResult(
++                                requestId = requestId,
++                                packageName = packageName,
++                                outcome = LightPackageUninstallOutcome.AwaitingUserAction,
++                                message = error.message
++                                    ?: "Open the confirmation to approve this uninstall.",
++                            ),
++                        )
++                    }
++            }
++            return
++        }
++
++        val outcome = when (status) {
++            PackageInstaller.STATUS_SUCCESS -> LightPackageUninstallOutcome.Uninstalled
++            PackageInstaller.STATUS_FAILURE_ABORTED -> LightPackageUninstallOutcome.Cancelled
++            else -> LightPackageUninstallOutcome.Failed
++        }
++        val message = when (status) {
++            PackageInstaller.STATUS_SUCCESS -> "Uninstalled"
++            PackageInstaller.STATUS_FAILURE_ABORTED -> "Uninstall cancelled"
++            PackageInstaller.STATUS_FAILURE_BLOCKED -> "Uninstall blocked by the system"
++            PackageInstaller.STATUS_FAILURE_CONFLICT -> "The device policy prevents uninstalling"
++            else -> intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)
++                ?: "Uninstall failed"
++        }
++        LightPackageUninstallResultStore.write(
++            context,
++            LightPackageUninstallResult(
++                requestId = requestId,
++                packageName = packageName,
++                outcome = outcome,
++                message = message,
++            ),
++        )
++    }
++}
 diff --git a/sdk/client/src/main/kotlin/com/thelightphone/sdk/install/PackageInstallCapability.kt b/sdk/client/src/main/kotlin/com/thelightphone/sdk/install/PackageInstallCapability.kt
 new file mode 100644
 index 0000000000000000000000000000000000000000..4d0ade2a00b37facf2caf76eaf6524c3d85d127a
@@ -797,10 +940,10 @@ index 0000000000000000000000000000000000000000..4d0ade2a00b37facf2caf76eaf6524c3
 +}
 diff --git a/sdk/client/src/test/kotlin/com/thelightphone/sdk/install/LightPackageInstallerTest.kt b/sdk/client/src/test/kotlin/com/thelightphone/sdk/install/LightPackageInstallerTest.kt
 new file mode 100644
-index 0000000000000000000000000000000000000000..88f808377d357a53444ae969795cad91f22327d8
+index 0000000000000000000000000000000000000000..d480155989a701777903cf510bed86d941ac36e9
 --- /dev/null
 +++ b/sdk/client/src/test/kotlin/com/thelightphone/sdk/install/LightPackageInstallerTest.kt
-@@ -0,0 +1,94 @@
+@@ -0,0 +1,125 @@
 +package com.thelightphone.sdk.install
 +
 +import java.nio.file.Files
@@ -893,5 +1036,36 @@ index 0000000000000000000000000000000000000000..88f808377d357a53444ae969795cad91
 +        } finally {
 +            root.toFile().deleteRecursively()
 +        }
++    }
++
++    @Test
++    fun `uninstall ids are deterministic per package`() {
++        assertEquals(
++            uninstallRequestIdFor("com.example.bank"),
++            uninstallRequestIdFor("com.example.bank"),
++        )
++    }
++
++    @Test
++    fun `uninstall ids differ across packages and stay positive`() {
++        val packages = listOf("com.example.bank", "com.example.shop", "com.loosewire.borealis")
++        val ids = packages.map(::uninstallRequestIdFor).toSet()
++
++        assertEquals(packages.size, ids.size)
++        assertEquals(packages.size, ids.count { it > 0 })
++    }
++
++    @Test
++    fun `uninstall request rejects blank and whitespace package names`() {
++        listOf("", "   ", "com.example bank").forEach { packageName ->
++            assertFailsWith<LightPackageInstallException> {
++                validateUninstallRequest(packageName)
++            }
++        }
++    }
++
++    @Test
++    fun `uninstall request accepts a dotted package name`() {
++        validateUninstallRequest("com.example.bank")
 +    }
 +}

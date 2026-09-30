@@ -56,6 +56,10 @@ Your apps stay in the phone's library after installation. When an update check
 succeeds, they'll show **Up to date** or **Update available**. Tap **Update** when
 needed; Borealis also checks periodically for updates.
 
+To uninstall an installed app, open its row in Borealis and tap **Uninstall**,
+then confirm in Borealis and once more in Android. The app stays in your
+library so you can reinstall it later.
+
 Removing an app from the website's library stops future installs and updates
 through Borealis. It does not uninstall the app from your phone.
 
