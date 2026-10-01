@@ -104,8 +104,12 @@ class BorealisHomeViewModel(
     }
 
     fun load() {
-        // Returning from Android's confirmation must not cancel an in-flight download/commit.
-        if (requestJob?.isActive == true) return
+        // Returning from Android's confirmation / settings must not cancel an
+        // in-flight download/commit, but it SHOULD re-read the stored grant.
+        if (requestJob?.isActive == true) {
+            refreshInstallAccess()
+            return
+        }
         requestJob = viewModelScope.launch(Dispatchers.IO) {
             try {
                 val local = repository.load()
@@ -132,6 +136,10 @@ class BorealisHomeViewModel(
                 fail(error, "Could not load Borealis.")
             }
         }
+    }
+
+    fun refreshInstallAccess() {
+        _uiState.update { it.copy(installAccessGranted = repository.canRequestPackageInstalls) }
     }
 
     fun beginPairing() {
@@ -398,6 +406,7 @@ class BorealisHomeScreen(sealedActivity: SealedLightActivity) :
                             state.loading && state.session == null -> CenterMessage("Working…")
                             state.pendingPairing != null -> PairingContent(state)
                             state.session == null -> UnpairedContent()
+                            !state.installAccessGranted -> InstallAccessContent(viewModel::openInstallSettings)
                             else -> ReadyContent(state, viewModel::install, viewModel::confirmUninstall)
                         }
                     }
@@ -445,10 +454,7 @@ class BorealisHomeScreen(sealedActivity: SealedLightActivity) :
             state.session == null -> listOf(
                 LightBarButton.Text(text = "PAIR", onClick = viewModel::beginPairing),
             )
-            !state.installAccessGranted -> listOf(
-                LightBarButton.Text(text = "ALLOW INSTALLS", onClick = viewModel::openInstallSettings),
-                googleAccountButton,
-            )
+            !state.installAccessGranted -> listOf(googleAccountButton)
             else -> listOf(
                 googleAccountButton,
                 LightBarButton.LightIcon(
@@ -531,6 +537,36 @@ private fun PairingContent(state: BorealisUiState) {
                 modifier = Modifier.padding(top = 1f.gridUnitsAsDp()),
             )
         }
+    }
+}
+
+/**
+ * Shown on open (and after returning from settings) whenever Android has not yet
+ * granted Borealis "install unknown apps" — which also gates uninstalls — so the
+ * user is told to enable it instead of seeing a silently disabled library.
+ */
+@Composable
+private fun InstallAccessContent(onGrant: () -> Unit) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(horizontal = 1f.gridUnitsAsDp()),
+    ) {
+        LightText(
+            text = "ALLOW APP INSTALLS",
+            variant = LightTextVariant.Heading,
+            modifier = Modifier.padding(top = 0.75f.gridUnitsAsDp()),
+        )
+        LightText(
+            text = "Borealis needs Android's \"install unknown apps\" permission to install, update, and uninstall library apps. Enable it for Borealis in system settings, then refresh.",
+            variant = LightTextVariant.Copy,
+            modifier = Modifier.padding(top = 0.75f.gridUnitsAsDp()),
+        )
+        LightText(
+            text = "OPEN SETTINGS",
+            variant = LightTextVariant.Button,
+            modifier = Modifier
+                .padding(top = 1f.gridUnitsAsDp())
+                .lightClickable(onClickLabel = "Open install access settings", onClick = onGrant),
+        )
     }
 }
 

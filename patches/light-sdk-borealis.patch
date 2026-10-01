@@ -94,12 +94,13 @@ index ca15a3fdcb1c38a475762eadbe4a814d5ff7ae8b..a9bc93a51c978b25cc2c0d6970eb4a1c
  
      /**
       * Permissions a capability contributes to the generated manifest. These are
-@@ -214,6 +218,11 @@ object LightToolPolicy {
+@@ -214,6 +218,12 @@ object LightToolPolicy {
              "android.permission.FOREGROUND_SERVICE",
              "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
          ),
 +        PACKAGE_INSTALL_REQUEST to listOf(
 +            "android.permission.REQUEST_INSTALL_PACKAGES",
++            "android.permission.REQUEST_DELETE_PACKAGES",
 +            "android.permission.QUERY_ALL_PACKAGES",
 +            "android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION",
 +        ),
@@ -229,7 +230,7 @@ diff --git a/plugin/src/test/kotlin/com/thelightphone/plugin/ManifestGeneratorTe
 index f57fd0ce866d0abfdda2b8567932e77a7a6599a8..5045d41b7c26f7bdfb4f5a26324256bcd8be43d1 100644
 --- a/plugin/src/test/kotlin/com/thelightphone/plugin/ManifestGeneratorTest.kt
 +++ b/plugin/src/test/kotlin/com/thelightphone/plugin/ManifestGeneratorTest.kt
-@@ -131,6 +131,40 @@ class ManifestGeneratorTest {
+@@ -131,6 +131,41 @@ class ManifestGeneratorTest {
          assertTrue(xml.contains("""<action android:name="androidx.media3.session.MediaSessionService" />"""))
      }
  
@@ -238,6 +239,7 @@ index f57fd0ce866d0abfdda2b8567932e77a7a6599a8..5045d41b7c26f7bdfb4f5a26324256bc
 +        val xml = render(capabilities = listOf("package-install-request"))
 +
 +        assertTrue(xml.contains("""<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />"""))
++        assertTrue(xml.contains("""<uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />"""))
 +        assertTrue(xml.contains("""<uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />"""))
 +        assertTrue(xml.contains("""<uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />"""))
 +    }
