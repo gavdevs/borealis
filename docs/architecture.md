@@ -119,7 +119,7 @@ This model protects Borealis's own path. It does not prevent installation throug
 
 ## Update behavior
 
-The phone retains library rows after an install finishes and looks up installed versions through the SDK. Update checks request Play metadata, not APK downloads. A failed version lookup is shown as unavailable rather than up to date. Periodic sync checks installed library apps for updates; initial installs remain a phone action. Android's confirmation UI is always supported. Borealis may request unattended updates only when Android allows the existing installer of record to do so; a required confirmation is not treated as a failure.
+The phone retains library rows after an install finishes and looks up installed versions through the SDK. Update checks request Play metadata, not APK downloads. A failed version lookup is shown as unavailable rather than up to date. A cached personal session that Google rejects is dropped and rebuilt once from the stored credential, and the operation retried once, before a check is marked unavailable or an install fails; only a revoked stored credential still requires signing in again. Periodic sync checks installed library apps for updates; initial installs remain a phone action. Android's confirmation UI is always supported. Borealis may request unattended updates only when Android allows the existing installer of record to do so; a required confirmation is not treated as a failure.
 
 Download progress aggregates real bytes across the base APK and every split, with bounded UI refresh frequency. Resolving, verifying, handing to Android, and waiting for user confirmation are distinct stages. These stages do not invent percentages when the installer provides none.
 

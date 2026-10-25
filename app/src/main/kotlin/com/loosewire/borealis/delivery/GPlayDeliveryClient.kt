@@ -3,6 +3,7 @@ package com.loosewire.borealis.delivery
 import com.aurora.gplayapi.data.models.App
 import com.aurora.gplayapi.data.models.AuthData
 import com.aurora.gplayapi.data.models.PlayFile
+import com.aurora.gplayapi.exceptions.GooglePlayException
 import com.aurora.gplayapi.helpers.AppDetailsHelper
 import com.aurora.gplayapi.helpers.PurchaseHelper
 import com.aurora.gplayapi.network.IHttpClient
@@ -10,6 +11,7 @@ import java.io.ByteArrayInputStream
 import java.util.Base64
 import java.util.Locale
 import java.util.Properties
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -45,14 +47,21 @@ class GPlayDeliveryClient(
 
     /** Details only: this must not purchase an app or obtain/download APK artifacts. */
     suspend fun latestVersionCode(packageName: String): Long = withContext(Dispatchers.IO) {
-        appDetails(packageName, authenticate()).versionCode
+        withRefreshedPlaySession { auth -> appDetails(packageName, auth).versionCode }
     }
 
     suspend fun resolve(
         packageName: String,
         installedSignerSha256: String? = null,
     ): PlayDelivery = withContext(Dispatchers.IO) {
-        val auth = authenticate()
+        withRefreshedPlaySession { auth -> resolveDelivery(packageName, installedSignerSha256, auth) }
+    }
+
+    private fun resolveDelivery(
+        packageName: String,
+        installedSignerSha256: String?,
+        auth: AuthData,
+    ): PlayDelivery {
         val app = appDetails(packageName, auth)
 
         val helper = PurchaseHelper(auth).using(httpClient)
@@ -76,7 +85,7 @@ class GPlayDeliveryClient(
             certificateHash = installedSignerSha256?.let(::hexSha256ToBase64Url),
         )
 
-        PlayDelivery(
+        return PlayDelivery(
             app = app,
             apkFiles = files.filter { it.type == PlayFile.Type.BASE || it.type == PlayFile.Type.SPLIT },
             expansionFiles = files.filter { it.type == PlayFile.Type.OBB || it.type == PlayFile.Type.PATCH },
@@ -98,6 +107,27 @@ class GPlayDeliveryClient(
     private suspend fun authenticate(): AuthData = authMutex.withLock {
         authData ?: withContext(Dispatchers.IO) {
             authProvider.authenticate(profile, locale).also { authData = it }
+        }
+    }
+
+    /**
+     * A cached personal session can expire while the app stays open; Google rejects it and
+     * every update check or install then fails until the process restarts. Drop the rejected
+     * session, rebuild once from the stored credential, and retry the operation once. If the
+     * stored credential was revoked, the rebuild fails with the sign-in error instead.
+     */
+    private suspend fun <T> withRefreshedPlaySession(block: (AuthData) -> T): T {
+        val session = authenticate()
+        return try {
+            block(session)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: GooglePlayException.AuthException) {
+            authMutex.withLock {
+                // Keep a fresher session another operation already cached.
+                if (authData === session) authData = null
+            }
+            block(authenticate())
         }
     }
 
