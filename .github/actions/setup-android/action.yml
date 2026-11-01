@@ -13,23 +13,18 @@ runs:
         java-version: '17'
     - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       with:
+        # Borealis depends on the exact SDK revision; the guard below fails the
+        # build if it ever drifts. This revision carries the package-install
+        # and Google-Play-sign-in work in-tree, so no local patch is applied.
         repository: gavdevs/light-sdk
-        ref: 52fbc5a8aedbd3c4c88037580709e53540086229
+        ref: b1a2d859df773c2d145fdc8fb65d11e108671d5c
         path: .ci/light-sdk
         persist-credentials: false
-    - name: Apply the checked-in Borealis SDK patch
+    - name: Assert the pinned SDK revision
       shell: bash
       run: |
         set -euo pipefail
-        test "$(git -C .ci/light-sdk rev-parse HEAD)" = '52fbc5a8aedbd3c4c88037580709e53540086229'
-        git -C .ci/light-sdk apply --check "$GITHUB_WORKSPACE/patches/light-sdk-borealis.patch"
-        git -C .ci/light-sdk apply "$GITHUB_WORKSPACE/patches/light-sdk-borealis.patch"
-    - name: Apply the checked-in Borealis SDK extension
-      shell: bash
-      run: |
-        set -euo pipefail
-        python3 -B -m unittest discover -s scripts -p test_apply_sdk_extension.py
-        python3 -B scripts/apply-sdk-extension.py .ci/light-sdk
+        test "$(git -C .ci/light-sdk rev-parse HEAD)" = 'b1a2d859df773c2d145fdc8fb65d11e108671d5c'
     - uses: gradle/actions/setup-gradle@748248ddd2a24f49513d8f472f81c3a07d4d50e1 # v4.4.4
       with:
         cache-read-only: ${{ inputs.cache-read-only == 'true' || github.event_name == 'pull_request' }}

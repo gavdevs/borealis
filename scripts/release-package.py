@@ -20,7 +20,7 @@ from release_policy import (
 )
 
 ROOT = Path(__file__).resolve().parent.parent
-SDK_REVISION = '52fbc5a8aedbd3c4c88037580709e53540086229'
+SDK_REVISION = 'b1a2d859df773c2d145fdc8fb65d11e108671d5c'
 GPLAY_REVISION = '18ec2bd74995d30e500b756359a4de3e37976f03'
 output = ROOT / 'release-output'
 output.mkdir(exist_ok=True)
@@ -44,13 +44,6 @@ def sha256(path):
 
 if git(sdk, 'rev-parse', 'HEAD') != SDK_REVISION:
     raise SystemExit('Unexpected SDK revision.')
-extension_files = sorted((ROOT / 'sdk-extension/client').rglob('*.kt'))
-if not extension_files:
-    raise SystemExit('SDK extension sources are missing.')
-for source in extension_files:
-    built_source = sdk / 'sdk' / source.relative_to(ROOT / 'sdk-extension')
-    if not built_source.is_file() or sha256(source) != sha256(built_source):
-        raise SystemExit('Built SDK extension differs from the corresponding source.')
 commit = git(ROOT, 'rev-parse', 'HEAD')
 tag = f"v{tool['versionName']}"
 if os.environ.get('RELEASE_TAG') != tag:
@@ -92,9 +85,7 @@ shutil.copyfile(apk, output / apk_name)
 (output / 'release-build.json').write_text(json.dumps(build, indent=2) + '\n')
 
 subprocess.run(['git', 'archive', '--format=tar.gz', '--prefix=borealis/', f'--output={output / "borealis-source.tar.gz"}', commit], cwd=ROOT, check=True)
-subprocess.run(['git', 'archive', '--format=tar.gz', '--prefix=light-sdk/', f'--output={output / "light-sdk-base-source.tar.gz"}', SDK_REVISION], cwd=sdk, check=True)
-shutil.copyfile(ROOT / 'patches/light-sdk-borealis.patch', output / 'light-sdk-borealis.patch')
-shutil.copyfile(ROOT / 'patches/LICENSE.light-sdk', output / 'LICENSE.light-sdk')
+subprocess.run(['git', 'archive', '--format=tar.gz', '--prefix=light-sdk/', f'--output={output / "light-sdk-source.tar.gz"}', SDK_REVISION], cwd=sdk, check=True)
 shutil.copyfile(ROOT / 'licenses/LICENSE.tink', output / 'LICENSE.tink')
 shutil.copyfile(ROOT / 'LICENSE', output / 'LICENSE')
 shutil.copyfile(ROOT / 'THIRD_PARTY_NOTICES.md', output / 'THIRD_PARTY_NOTICES.md')
@@ -145,13 +136,7 @@ provenance = {
     'companionUrl': COMPANION_URL,
     'apk': apk_name,
     'signingCertificateSha256': expected,
-    'sdk': {'repository': 'https://github.com/gavdevs/light-sdk', 'commit': SDK_REVISION,
-            'patchSha256': sha256(output / 'light-sdk-borealis.patch'),
-            'extensionInstallerSha256': sha256(ROOT / 'scripts/apply-sdk-extension.py'),
-            'extensionFiles': {
-                str(path.relative_to(ROOT)): sha256(path)
-                for path in extension_files
-            }},
+    'sdk': {'repository': 'https://github.com/gavdevs/light-sdk', 'commit': SDK_REVISION},
     'gplayapi': {'coordinate': 'com.auroraoss:gplayapi:3.6.4', 'commit': GPLAY_REVISION,
                  'sourceUrl': source_url, 'sourceSha256': sha256(gplay_archive)},
     'tink': {'coordinate': 'com.google.crypto.tink:tink:1.20.0', 'license': 'Apache-2.0',
