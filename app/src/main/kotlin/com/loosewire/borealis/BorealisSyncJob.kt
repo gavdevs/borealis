@@ -11,7 +11,11 @@ val borealisSyncJob: LightJobHandler = { context, _ ->
     val result = BorealisServices.from(context).repository.syncAndUpdate()
     result.fold(
         onSuccess = { summary ->
-            LightJobResult.Success(mapOf("message" to summary.message))
+            LightJobResult.Success(
+                mapOf("message" to summary.message),
+                outputFilePath = null,
+                message = null,
+            )
         },
         onFailure = { error ->
             LightJobResult.Retry
