@@ -5,6 +5,7 @@ import type { BorealisConfig } from './config.js'
 import { BorealisDatabase } from './db.js'
 import { createBorealisApp } from './app.js'
 import type { PlayAppDetails, PlaySearchProvider } from './play-search.js'
+import { ReportDeliveryError } from './reports.js'
 import type { InstallJobPayload, SignedJobEnvelope } from '../shared/api.js'
 
 const API = '/api/borealis/v1'
@@ -272,6 +273,127 @@ describe('Borealis personal-library API', () => {
     const bobDevices = await (await request('/me/devices', bob)).json() as { devices: unknown[] }
     expect(aliceDevices.devices.length + bobDevices.devices.length).toBe(1)
     expect(await database.listDevices()).toHaveLength(1)
+  })
+
+  it('files an authenticated web report through the shared contract', async () => {
+    const create = vi.fn(async () => ({ number: 7, url: 'https://github.com/gavdevs/borealis/issues/7' }))
+    const reporting = await createBorealisApp({
+      config, database, playSearch, clock: () => new Date(NOW),
+      clientAddress: () => 'fixture-peer', reportIssues: { create },
+    })
+    const response = await reporting.request(`${API}/reports`, {
+      method: 'POST',
+      headers: { Cookie: alice, 'Content-Type': 'application/json', 'X-Borealis-Request': '1', Origin: config.publicBaseUrl },
+      body: JSON.stringify({ title: 'Library did not update', description: 'The app never appeared after pairing.', source: 'web' }),
+    })
+    expect(response.status).toBe(201)
+    expect(await response.json()).toEqual({ ok: true, number: 7, url: 'https://github.com/gavdevs/borealis/issues/7' })
+    expect(create).toHaveBeenCalledWith({
+      title: 'Library did not update', description: 'The app never appeared after pairing.', source: 'web',
+    })
+  })
+
+  it('accepts the same report from a paired phone bearer and rejects a mismatched source', async () => {
+    const create = vi.fn(async () => ({ number: 8, url: 'https://github.com/gavdevs/borealis/issues/8' }))
+    const reporting = await createBorealisApp({
+      config, database, playSearch, clock: () => new Date(NOW),
+      clientAddress: () => 'fixture-peer', reportIssues: { create },
+    })
+    const phone = await pair()
+    const accepted = await reporting.request(`${API}/reports`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${phone.bearer}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Install failed', description: 'The install stopped at preparing.', source: 'phone' }),
+    })
+    expect(accepted.status).toBe(201)
+    const mismatch = await reporting.request(`${API}/reports`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${phone.bearer}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Install failed', description: 'The install stopped at preparing.', source: 'web' }),
+    })
+    expect(mismatch.status).toBe(400)
+    expect(create).toHaveBeenCalledTimes(1)
+  })
+
+  it('requires authentication and the browser mutation guard for reports', async () => {
+    const create = vi.fn(async () => ({ number: 9, url: 'https://github.com/gavdevs/borealis/issues/9' }))
+    const reporting = await createBorealisApp({
+      config, database, playSearch, clock: () => new Date(NOW),
+      clientAddress: () => 'fixture-peer', reportIssues: { create },
+    })
+    const body = JSON.stringify({ title: 'Sign in loop', description: 'Signing in never finishes.', source: 'web' })
+    expect((await reporting.request(`${API}/reports`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Borealis-Request': '1' }, body,
+    })).status).toBe(401)
+    expect((await reporting.request(`${API}/reports`, {
+      method: 'POST', headers: { Cookie: alice, 'Content-Type': 'application/json' }, body,
+    })).status).toBe(403)
+    expect((await reporting.request(`${API}/reports`)).status).toBe(401)
+    expect(create).not.toHaveBeenCalled()
+  })
+
+  it('validates report fields and never forwards oversized text', async () => {
+    const create = vi.fn(async () => ({ number: 10, url: 'https://github.com/gavdevs/borealis/issues/10' }))
+    const reporting = await createBorealisApp({
+      config, database, playSearch, clock: () => new Date(NOW),
+      clientAddress: () => 'fixture-peer', reportIssues: { create },
+    })
+    for (const body of [
+      { title: 'ab', description: 'Long enough description.', source: 'web' },
+      { title: 'Valid title', description: 'short', source: 'web' },
+      { title: 'Valid title', description: 'Long enough description.', diagnostics: 'd'.repeat(9_000), source: 'web' },
+      { title: 'Valid title', description: 'Long enough description.', source: 'email' },
+      { title: 'Valid title', description: 'Long enough description.', source: 'web', extra: true },
+    ]) {
+      const response = await reporting.request(`${API}/reports`, {
+        method: 'POST',
+        headers: { Cookie: alice, 'Content-Type': 'application/json', 'X-Borealis-Request': '1', Origin: config.publicBaseUrl },
+        body: JSON.stringify(body),
+      })
+      expect(response.status).toBe(400)
+    }
+    expect(create).not.toHaveBeenCalled()
+  })
+
+  it('reports an unconfigured tracker and a sanitized GitHub failure', async () => {
+    const unconfigured = await createBorealisApp({
+      config, database, playSearch, clock: () => new Date(NOW),
+      clientAddress: () => 'fixture-peer', reportIssues: null,
+    })
+    const headers = { Cookie: alice, 'Content-Type': 'application/json', 'X-Borealis-Request': '1', Origin: config.publicBaseUrl }
+    const body = JSON.stringify({ title: 'App crash', description: 'The library screen closes immediately.', source: 'web' })
+    const unavailable = await unconfigured.request(`${API}/reports`, { method: 'POST', headers, body })
+    expect(unavailable.status).toBe(503)
+    expect(await unavailable.json()).toEqual({ error: 'Report filing is not configured on this companion.' })
+    expect((await unconfigured.request(`${API}/reports`, { headers: { Cookie: alice } })).status).toBe(200)
+    expect(await (await unconfigured.request(`${API}/reports`, { headers: { Cookie: alice } })).json()).toEqual({ configured: false })
+
+    const failing = await createBorealisApp({
+      config, database, playSearch, clock: () => new Date(NOW), clientAddress: () => 'fixture-peer',
+      reportIssues: { create: async () => { throw new ReportDeliveryError('GitHub rejected the issue with HTTP 500.') } },
+    })
+    const failed = await failing.request(`${API}/reports`, { method: 'POST', headers, body })
+    expect(failed.status).toBe(502)
+    const message = await failed.text()
+    expect(message).toContain('could not be filed')
+    expect(message).not.toContain('HTTP 500')
+  })
+
+  it('applies a durable per-client limit to report filing', async () => {
+    const create = vi.fn(async () => ({ number: 11, url: 'https://github.com/gavdevs/borealis/issues/11' }))
+    const reporting = await createBorealisApp({
+      config, database, playSearch, clock: () => new Date(NOW),
+      clientAddress: () => 'report-limit-peer', reportIssues: { create },
+    })
+    const headers = { Cookie: alice, 'Content-Type': 'application/json', 'X-Borealis-Request': '1', Origin: config.publicBaseUrl }
+    const body = JSON.stringify({ title: 'Repeated report', description: 'A description long enough to pass.', source: 'web' })
+    for (let attempt = 0; attempt < 5; attempt++) {
+      expect((await reporting.request(`${API}/reports`, { method: 'POST', headers, body })).status).toBe(201)
+    }
+    const limited = await reporting.request(`${API}/reports`, { method: 'POST', headers, body })
+    expect(limited.status).toBe(429)
+    expect(limited.headers.get('Retry-After')).toBe('3600')
+    expect(create).toHaveBeenCalledTimes(5)
   })
 
   it('shares the aggregate account count with the curator only', async () => {

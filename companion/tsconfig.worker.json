@@ -15,6 +15,7 @@
     "src/server/db.ts",
     "src/server/passwords.ts",
     "src/server/play-search.ts",
+    "src/server/reports.ts",
     "src/server/worker.ts",
     "src/shared",
     "worker-configuration.d.ts"

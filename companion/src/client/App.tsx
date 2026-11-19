@@ -1,12 +1,12 @@
 import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
-import type { AccountSummary, AllowlistItem, DeviceSummary, JobSummary, PairingSummary, PlaySearchResult, UsageStats } from '../shared/api.js'
-import { ApiError, apiRequest } from './api.js'
+import { REPORT_LIMITS, type AccountSummary, type AllowlistItem, type DeviceSummary, type JobSummary, type PairingSummary, type PlaySearchResult, type ReportReceipt, type ReportState, type UsageStats } from '../shared/api.js'
+import { ApiError, apiRequest, reportAvailability, submitReport } from './api.js'
 import { createRequestGuard } from './request-guard.js'
 import { PASSWORD_MIN_LENGTH, PASSWORD_MAX_CODE_UNITS, passwordValidationError } from '../shared/password-policy.js'
 
 const LEGACY_TOKEN_KEY = 'borealis.admin-token.v1'
 const THEME_KEY = 'borealis.theme.v1'
-type Page = 'home' | 'apps' | 'pair' | 'profile'
+type Page = 'home' | 'apps' | 'pair' | 'profile' | 'report'
 type Theme = 'system' | 'light' | 'dark'
 type CompanionData = { library: AllowlistItem[]; devices: DeviceSummary[] }
 type AccountResponse = { account: AccountSummary }
@@ -41,7 +41,7 @@ export function App() {
     return saved === 'light' || saved === 'dark' ? saved : 'system'
   })
   const [, route, section] = hash.split('/')
-  const page: Page = route === 'apps' || route === 'pair' || route === 'profile' ? route : 'home'
+  const page: Page = route === 'apps' || route === 'pair' || route === 'profile' || route === 'report' ? route : 'home'
   useEffect(() => {
     let current = true
     saveStorage('sessionStorage', LEGACY_TOKEN_KEY, '')
@@ -65,7 +65,7 @@ export function App() {
     saveStorage('localStorage', THEME_KEY, theme)
   }, [theme])
   useEffect(() => {
-    document.title = `${account ? ({ home: 'Home', apps: 'Apps', pair: 'Pair a phone', profile: 'Profile' }[page]) : 'Sign in'} · Borealis`
+    document.title = `${account ? ({ home: 'Home', apps: 'Apps', pair: 'Pair a phone', profile: 'Profile', report: 'Report a problem' }[page]) : 'Sign in'} · Borealis`
     const frame = requestAnimationFrame(() => {
       const target = document.getElementById(section || 'main')
       target?.focus({ preventScroll: true })
@@ -94,14 +94,14 @@ export function App() {
       <header className="topbar">
         <a className="wordmark" href="#/home" aria-label="Borealis companion home">{borealisMark}Borealis</a>
         <nav className="nav" aria-label="Companion navigation">
-          {account ? <><a href="#/home" aria-current={page === 'home' || page === 'pair' ? 'page' : undefined}>Home</a><a href="#/apps" aria-current={page === 'apps' ? 'page' : undefined}>Apps</a><a href="#/profile" aria-current={page === 'profile' ? 'page' : undefined}>Profile</a></> : null}
+          {account ? <><a href="#/home" aria-current={page === 'home' || page === 'pair' ? 'page' : undefined}>Home</a><a href="#/apps" aria-current={page === 'apps' ? 'page' : undefined}>Apps</a><a href="#/report" aria-current={page === 'report' ? 'page' : undefined}>Report</a><a href="#/profile" aria-current={page === 'profile' ? 'page' : undefined}>Profile</a></> : null}
           <button className="theme-toggle" onClick={toggleTheme} aria-label="Switch light or dark theme" title="Switch light or dark theme"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M12 4a8 8 0 0 1 0 16Z" fill="currentColor" /></svg></button>
         </nav>
       </header>
       <main className="main" id="main" tabIndex={-1}>
         {checkingSession ? <div className="layout"><p className="status-line" role="status">Opening your companion…</p></div>
           : sessionError ? <div className="auth-layout"><div><h1>Could not open Borealis.</h1><p className="error" role="alert">{sessionError}</p><button className="action" onClick={() => setSessionCheck((current) => current + 1)}>Try again</button></div></div>
-            : account ? page === 'profile' ? <Profile account={account} onSignOut={signOut} onLock={lock} /> : <Companion key={account.id} onLock={lock} page={page} />
+            : account ? page === 'profile' ? <Profile account={account} onSignOut={signOut} onLock={lock} /> : page === 'report' ? <ReportPage onLock={lock} /> : <Companion key={account.id} onLock={lock} page={page} />
               : <AccountGate onSignIn={signedIn} notice={authNotice} />}
       </main>
       <footer className="footer"><span>Companion for a more intentional phone.</span><span>Borealis · Light Phone III</span></footer>
@@ -234,7 +234,108 @@ function UsageSection() {
 }
 
 
-function Companion({ onLock, page }: { onLock: () => void; page: Exclude<Page, 'profile'> }) {
+function ReportPage({ onLock }: { onLock: () => void }) {
+  const [state, setState] = useState<ReportState | null>(null)
+  const [error, setError] = useState('')
+  const [attempt, setAttempt] = useState(0)
+  useEffect(() => {
+    let current = true
+    setState(null); setError('')
+    reportAvailability()
+      .then((response) => { if (current) setState(response) })
+      .catch((caught) => {
+        if (!current) return
+        if (caught instanceof ApiError && caught.status === 401) onLock()
+        else setError(messageFor(caught))
+      })
+    return () => { current = false }
+  }, [onLock, attempt])
+  return <div className="layout">
+    <aside className="intro"><p className="kicker">Report</p><h1>Tell us what went wrong.</h1><p className="lede">Describe the problem in your own words. Reports go to the Borealis issue tracker so they can be fixed.</p></aside>
+    <div className="workspace">
+      <Section id="report" label="Report a problem" title="What happened?">
+        {error ? <><p className="error" role="alert">{error}</p><div className="actions"><button className="action" onClick={() => setAttempt((current) => current + 1)}>Try again</button></div></>
+          : !state ? <p className="status-line" role="status">Checking whether reports can be sent…</p>
+            : state.configured ? <ReportForm onLock={onLock} />
+              : <><p className="section-copy">This companion isn’t set up to file reports right now. Nothing you type here would be sent, so the form is closed.</p><p className="section-copy">You can still describe the problem to the person who runs this companion.</p></>}
+      </Section>
+    </div>
+  </div>
+}
+
+export function ReportForm({ onLock, submit = submitReport }: {
+  onLock: () => void
+  submit?: (report: { title: string; description: string; diagnostics?: string }) => Promise<ReportReceipt>
+}) {
+  const [error, setError] = useState('')
+  const [receipt, setReceipt] = useState<ReportReceipt | null>(null)
+  const [busy, setBusy] = useState(false)
+  const busyRef = useRef(false)
+  async function send(event: FormEvent) {
+    event.preventDefault()
+    if (busyRef.current) return
+    // Read the submitted fields so browser autofill is included even when it
+    // did not update React state. Never log the field contents. Keep a form
+    // reference because React clears currentTarget after the handler returns.
+    const form = event.currentTarget as HTMLFormElement
+    const fields = new FormData(form)
+    const title = String(fields.get('title') ?? '').trim()
+    const description = String(fields.get('description') ?? '').trim()
+    const diagnostics = String(fields.get('diagnostics') ?? '').trim()
+    const invalid = reportValidationError(title, description, diagnostics)
+    if (invalid) { setReceipt(null); setError(invalid); return }
+    busyRef.current = true; setBusy(true); setError(''); setReceipt(null)
+    try {
+      const created = await submit({ title, description, ...(diagnostics ? { diagnostics } : {}) })
+      setReceipt(created)
+      form.reset()
+    } catch (caught) {
+      if (caught instanceof ApiError && caught.status === 401) onLock()
+      else setError(messageFor(caught))
+    } finally { busyRef.current = false; setBusy(false) }
+  }
+  return <>
+    {receipt ? <div className="notice" role="status">
+      <p><strong>Report sent.</strong> It was filed as issue #{receipt.number}.</p>
+      <p><a className="inline-link" href={receipt.url} target="_blank" rel="noopener noreferrer">Open the issue<span aria-hidden="true"> ↗</span></a></p>
+    </div> : null}
+    {error ? <p className="error" role="alert">{error}</p> : null}
+    <p className="section-copy">Only the title, description, optional diagnostics, and that this came from the web companion are sent. Don’t include passwords, account names, or device credentials.</p>
+    <form className="report-form" onSubmit={send} aria-describedby="report-privacy">
+      <fieldset disabled={busy}>
+        <legend className="label">Problem details</legend>
+        <label className="field" htmlFor="report-problem-title">
+          <span>Title</span>
+          <input id="report-problem-title" name="title" type="text" required minLength={3} maxLength={REPORT_LIMITS.title} autoComplete="off" aria-describedby="report-problem-title-hint" />
+        </label>
+        <p className="field-hint" id="report-problem-title-hint">A short summary, up to {REPORT_LIMITS.title} characters. For example, “Library didn’t update after pairing”.</p>
+        <label className="field" htmlFor="report-problem-description">
+          <span>Description</span>
+          <textarea id="report-problem-description" name="description" required minLength={10} maxLength={REPORT_LIMITS.description} aria-describedby="report-problem-description-hint" />
+        </label>
+        <p className="field-hint" id="report-problem-description-hint">What you did, what you expected, and what happened. Up to {REPORT_LIMITS.description} characters.</p>
+        <label className="field" htmlFor="report-problem-diagnostics">
+          <span>Diagnostics (optional)</span>
+          <textarea id="report-problem-diagnostics" name="diagnostics" maxLength={REPORT_LIMITS.diagnostics} aria-describedby="report-problem-diagnostics-hint" />
+        </label>
+        <p className="field-hint" id="report-problem-diagnostics-hint">Anything else that helps, such as the steps you took or a message you saw. Up to {REPORT_LIMITS.diagnostics} characters. It’s included with your report; obvious passwords and tokens are removed.</p>
+      </fieldset>
+      <p className="field-hint" id="report-privacy">Reports are public issues. Remove anything private before sending.</p>
+      <div className="actions"><button className="action" disabled={busy}>{busy ? 'Sending report…' : 'Send report'}</button></div>
+    </form>
+  </>
+}
+
+export function reportValidationError(title: string, description: string, diagnostics: string): string {
+  if (title.length < 3) return 'Add a title of at least 3 characters.'
+  if (title.length > REPORT_LIMITS.title) return `Keep the title to ${REPORT_LIMITS.title} characters or fewer.`
+  if (description.length < 10) return 'Describe the problem in at least 10 characters.'
+  if (description.length > REPORT_LIMITS.description) return `Keep the description to ${REPORT_LIMITS.description} characters or fewer.`
+  if (diagnostics.length > REPORT_LIMITS.diagnostics) return `Keep diagnostics to ${REPORT_LIMITS.diagnostics} characters or fewer.`
+  return ''
+}
+
+function Companion({ onLock, page }: { onLock: () => void; page: Exclude<Page, 'profile' | 'report'> }) {
   const [refreshGuard] = useState(createRequestGuard)
   const [data, setData] = useState<CompanionData>({ library: [], devices: [] })
   const [selectedDeviceId, setSelectedDeviceId] = useState('')

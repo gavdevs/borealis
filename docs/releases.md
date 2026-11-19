@@ -6,6 +6,18 @@ approval. The workflow supports private testing and reviewed public releases.
 Repository visibility and release publication are separate from building: stable
 releases and all public-repository prereleases are created as drafts first.
 
+## v0.1.11 — installer recovery and issue reporting
+
+- Version code 16; retains `com.loosewire.borealis` and the existing release signing key.
+- Install and Update can restart an attempt when Android confirmation was dismissed
+  or left behind, instead of remaining stuck on the pending attempt.
+- Phone users can submit a public GitHub issue with optional, previewable,
+  bounded and sanitized activity logs.
+- Signed-in website users can submit an issue with a title and description.
+- Companion reporting is deployed; live issue creation and physical-phone
+  installer recovery still require user verification. Do not uninstall the
+  existing phone app to update: use the release-signed APK to preserve its data.
+
 ## Pipelines
 
 - `CI`: pull requests, `main` pushes, and manual runs. Runs companion tests,
@@ -92,11 +104,8 @@ ID and signing key for normal in-place updates.
 1. Review and commit the intended release changes on `main`. Set the semantic
    `versionName` and a strictly increasing `versionCode` in `app/lighttool.toml`
    before each new release tag, including prereleases. The previous latest release
-   is `0.1.9`, version code `14`, already published as Latest. The next stable
-   candidate is `0.1.10`, version code `15`: a Google Play session rejected while
-   the app is open is rebuilt once from the stored credential and the check or
-   install retried once, instead of failing every update check and install until
-   the app is force-closed.
+   is `0.1.10`, version code `15`. The next stable candidate is `0.1.11`, version
+   code `16`, containing installer recovery and phone/web issue reporting.
    A successful unoptimized alpha does not establish that the minified candidate
    works. Never move a failed tag onto fixed source.
 2. Push the reviewed commit to `main`. For stable release candidates, wait for
@@ -109,15 +118,15 @@ ID and signing key for normal in-place updates.
    commit. For the current candidate, after confirming `HEAD` is that commit:
 
    ```sh
-   git tag -a v0.1.10 -m "Borealis v0.1.10"
-   git push origin refs/tags/v0.1.10
+   git tag -a v0.1.11 -m "Borealis v0.1.11"
+   git push origin refs/tags/v0.1.11
    ```
 
    The tag push starts `Android release` on GitHub-hosted runners. A manual
    run can retry the same existing tag if no release for it exists:
 
    ```sh
-   gh workflow run release.yml --ref main -f tag=v0.1.10
+   gh workflow run release.yml --ref main -f tag=v0.1.11
    ```
 
 4. Download the resulting prerelease or draft and verify the APK

@@ -2,7 +2,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { AllowlistItem, JobSummary } from '../shared/api.js'
-import { AccountGate, groupJobHistory, JobActivity, LibrarySection } from './App.js'
+import { AccountGate, groupJobHistory, JobActivity, LibrarySection, ReportForm, reportValidationError } from './App.js'
 
 describe('hosted-service account entry', () => {
   it('offers sign in and account creation without server administration', () => {
@@ -106,5 +106,31 @@ describe('phone request history', () => {
     expect(html).toContain('Download interrupted.')
     expect(html).toContain('Open Borealis on your phone to try again.')
     expect(html).not.toContain('Earlier attempts')
+  })
+})
+
+describe('web report form', () => {
+  it('renders labelled title, description, and optional diagnostics fields', () => {
+    const html = renderToStaticMarkup(createElement(ReportForm, {
+      onLock() {},
+      submit: async () => ({ ok: true as const, number: 1, url: 'https://github.com/gavdevs/borealis/issues/1' }),
+    }))
+    expect(html).toContain('id="report-problem-title"')
+    expect(html).toContain('name="title"')
+    expect(html).toContain('id="report-problem-description"')
+    expect(html).toContain('<textarea id="report-problem-description" name="description"')
+    expect(html).toContain('id="report-problem-diagnostics"')
+    expect(html).toContain('Diagnostics (optional)')
+    expect(html).toContain('for="report-problem-title"')
+    expect(html).toContain('Reports are public issues.')
+    expect(html).not.toContain('role="alert"')
+    expect(html).toContain('Send report')
+  })
+
+  it('mirrors the server bounds and explains how to fix a too-short report', () => {
+    expect(reportValidationError('', 'Long enough description.', '')).toContain('at least 3 characters')
+    expect(reportValidationError('Title', 'short', '')).toContain('at least 10 characters')
+    expect(reportValidationError('Title', 'Long enough description.', 'd'.repeat(8_001))).toContain('8000 characters or fewer')
+    expect(reportValidationError('Title', 'Long enough description.', '')).toBe('')
   })
 })

@@ -46,6 +46,42 @@ describe('database configuration', () => {
     expect(loadConfig({ ...base, BOREALIS_PUBLIC_BASE_URL: 'http://127.0.0.1:8787' }).publicBaseUrl).toBe('http://127.0.0.1:8787')
   })
 
+  it('keeps report filing optional and rejects a half-configured tracker', () => {
+    expect(loadConfig(base).reportRepository).toBeUndefined()
+    expect(loadConfig(base).reportToken).toBeUndefined()
+    expect(loadConfig({
+      ...base,
+      BOREALIS_GITHUB_REPORT_REPOSITORY: 'gavdevs/borealis',
+      BOREALIS_GITHUB_REPORT_TOKEN: 'ghp_fixture_server_secret_value',
+    })).toMatchObject({
+      reportRepository: 'gavdevs/borealis',
+      reportToken: 'ghp_fixture_server_secret_value',
+    })
+    expect(() => loadConfig({ ...base, BOREALIS_GITHUB_REPORT_REPOSITORY: 'gavdevs/borealis' })).toThrow()
+    expect(() => loadConfig({ ...base, BOREALIS_GITHUB_REPORT_TOKEN: 'ghp_fixture_server_secret_value' })).toThrow()
+    expect(() => loadConfig({
+      ...base,
+      BOREALIS_GITHUB_REPORT_REPOSITORY: 'not a repository',
+      BOREALIS_GITHUB_REPORT_TOKEN: 'ghp_fixture_server_secret_value',
+    })).toThrow()
+  })
+
+  it('passes optional report settings through the Worker environment', () => {
+    const worker = {
+      ...base,
+      ...remote,
+      BOREALIS_PUBLIC_BASE_URL: 'https://borealis.loosewire.dev',
+      BOREALIS_GITHUB_REPORT_REPOSITORY: 'gavdevs/borealis',
+      BOREALIS_GITHUB_REPORT_TOKEN: 'ghp_fixture_server_secret_value',
+    }
+    expect(loadWorkerConfig(worker)).toMatchObject({
+      reportRepository: 'gavdevs/borealis',
+      reportToken: 'ghp_fixture_server_secret_value',
+    })
+    expect(loadWorkerConfig({ ...base, ...remote, BOREALIS_PUBLIC_BASE_URL: 'https://borealis.loosewire.dev' }))
+      .not.toHaveProperty('reportRepository')
+  })
+
   it.each([
     { TURSO_DATABASE_URL: 'libsql://borealis.example.turso.io' },
     { TURSO_AUTH_TOKEN: 'fixture-token' },

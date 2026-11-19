@@ -165,6 +165,12 @@ input[type="checkbox"]:checked::after { display: block; width: 6px; height: 11px
 .account-warning { margin-top: 1.5rem; color: var(--secondary); font-size: 0.9rem; line-height: 1.5; }
 .password-form { max-width: 38rem; }
 .password-form .field + .field, .password-form .field-hint + .field { margin-top: 1.5rem; }
+.report-form { max-width: 38rem; margin-top: 1.5rem; }
+.report-form fieldset { display: grid; gap: 0; }
+.report-form legend { margin-bottom: 1.25rem; }
+.report-form .field + .field, .report-form .field-hint + .field { margin-top: 1.75rem; }
+.report-form .field-hint + .actions { margin-top: 1rem; }
+.report-form .actions { margin-top: 1.75rem; }
 .footer { display: flex; justify-content: space-between; gap: 1rem 1.5rem; margin-top: auto; padding: 1.5rem var(--gutter) 2.25rem; border-top: 1px solid var(--rule); color: var(--secondary); font-size: 0.75rem; letter-spacing: 0.05em; }
 .footer p { margin: 0; }
 .footer a:hover { text-decoration: underline; }

@@ -1,3 +1,5 @@
+import type { ReportReceipt, ReportState, ReportSubmission } from '../shared/api.js'
+
 const API_BASE = '/api/borealis/v1'
 
 export class ApiError extends Error {
@@ -28,4 +30,13 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   const payload = await response.json().catch(() => ({})) as { error?: string }
   if (!response.ok) throw new ApiError(payload.error ?? `Request failed with HTTP ${response.status}.`, response.status)
   return payload as T
+}
+
+/** Files a report through the shared contract using the browser session. */
+export function submitReport(report: Omit<ReportSubmission, 'source'>): Promise<ReportReceipt> {
+  return apiRequest<ReportReceipt>('/reports', { method: 'POST', body: { ...report, source: 'web' } })
+}
+
+export function reportAvailability(): Promise<ReportState> {
+  return apiRequest<ReportState>('/reports')
 }

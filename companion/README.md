@@ -28,6 +28,10 @@ visible at mobile sizes; the adjacent wordmark supplies its accessible name.
 - **Home:** connected phones and installation/update activity.
 - **Apps:** search Play apps and add to your library; it appears on every paired phone.
 - **Pairing:** enter a code, preview the requesting phone, explicitly approve it.
+- **Report:** describe a problem; the companion files it as a GitHub issue when
+  an operator configures a server-side token. The form is labelled, bounds its
+  fields, and shows a clear success or error state. It is closed with an
+  explanation when filing is not configured.
 - Package identifiers, signing fingerprints, and request diagnostics belong in
   expandable details, not the default workflow.
 
@@ -313,8 +317,12 @@ session cookie, not the old admin bearer. Mutation requests also send
 - `GET|POST /me/devices/:deviceId/jobs`
 - `GET /me/stats` → aggregate account count for the operator (curator) role. Members
   receive an ordinary 404; there is no per-person tracking anywhere in the app.
-
-Legacy assignment routes are unavailable; library membership replaces that step.
+- `GET /reports` → `{configured}` for a signed-in browser; no secret is included.
+- `POST /reports` → `{title, description, diagnostics?, source}`. Accepts the
+  session cookie plus mutation guard (`source: "web"`) or a paired device bearer
+  (`source: "phone"`). Returns `{ok, number, url}` and files a GitHub issue
+  server-side when configured; otherwise `503`. Text is bounded and
+  credential-shaped substrings are redacted. Filing is limited per client.
 `GET /catalog/search` requires sign-in and returns public Play apps for every
 account. All phone operations are restricted to the account's own phones;
 another account's device identifiers are treated as not found. The former admin
@@ -331,7 +339,9 @@ pnpm build
 
 Tests cover passwords, cookie/session lifecycle, origin checks, rate limits,
 legacy migration compatibility, cross-account denial, library admission policy,
-pairing, exact-byte Ed25519 signatures, and device-bound library jobs.
+pairing, exact-byte Ed25519 signatures, device-bound library jobs, and user
+reports (authentication, validation, durable limits, GitHub failure, and
+successful issue creation).
 
 For the browser UI, `python3 tests/ui-smoke.py` checks the already-running
 companion with one headless Chromium instance (requires Python Playwright).

@@ -22,9 +22,22 @@ const environmentSchema = z.object({
   BOREALIS_JOB_TTL_SECONDS: z.coerce.number().int().min(60).max(3_600).default(900),
   BOREALIS_PLAY_LANGUAGE: z.string().regex(/^[a-z]{2}$/).default('en'),
   BOREALIS_PLAY_COUNTRY: z.string().regex(/^[a-z]{2}$/).default('us'),
+  // Optional server-side issue filing for user reports. The token is a secret
+  // used only in the GitHub REST Authorization header; it is never sent to a
+  // client or written to logs. Set both values or neither.
+  BOREALIS_GITHUB_REPORT_REPOSITORY: z.string().trim()
+    .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, 'Use the owner/repository form for BOREALIS_GITHUB_REPORT_REPOSITORY.')
+    .optional(),
+  BOREALIS_GITHUB_REPORT_TOKEN: z.string().trim().min(20).optional(),
 }).superRefine((environment, context) => {
   if (Boolean(environment.TURSO_DATABASE_URL) !== Boolean(environment.TURSO_AUTH_TOKEN)) {
     context.addIssue({ code: 'custom', message: 'Set both TURSO_DATABASE_URL and TURSO_AUTH_TOKEN, or neither for local SQLite.' })
+  }
+  if (Boolean(environment.BOREALIS_GITHUB_REPORT_REPOSITORY) !== Boolean(environment.BOREALIS_GITHUB_REPORT_TOKEN)) {
+    context.addIssue({
+      code: 'custom',
+      message: 'Set both BOREALIS_GITHUB_REPORT_REPOSITORY and BOREALIS_GITHUB_REPORT_TOKEN, or neither to disable report filing.',
+    })
   }
 })
 
@@ -45,6 +58,8 @@ export type BorealisConfig = {
   jobTtlSeconds: number
   playLanguage: string
   playCountry: string
+  reportRepository?: string
+  reportToken?: string
 }
 
 export type TursoConfig = {
@@ -89,5 +104,7 @@ function parseConfig(environment: unknown): BorealisConfig {
     jobTtlSeconds: parsed.BOREALIS_JOB_TTL_SECONDS,
     playLanguage: parsed.BOREALIS_PLAY_LANGUAGE,
     playCountry: parsed.BOREALIS_PLAY_COUNTRY,
+    ...(parsed.BOREALIS_GITHUB_REPORT_REPOSITORY ? { reportRepository: parsed.BOREALIS_GITHUB_REPORT_REPOSITORY } : {}),
+    ...(parsed.BOREALIS_GITHUB_REPORT_TOKEN ? { reportToken: parsed.BOREALIS_GITHUB_REPORT_TOKEN } : {}),
   }
 }

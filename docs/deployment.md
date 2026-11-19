@@ -97,11 +97,58 @@ cookies and changes rate-limit bucket keys, but does not rewrite password hashes
 account ownership, phone credentials, or the job-signing key. Users must sign in
 again after rotation.
 
-The Wrangler configuration declares all three required secrets. If initial import
-attempts a build before they are configured, finish the Worker settings and retry
-the build; do not remove the required-secret check. Inspect any custom-domain
-conflict rather than replacing an existing DNS target automatically. Once connected,
-pushes to `main` run the checks and deployment on Cloudflare's infrastructure.
+The Wrangler configuration declares the three required secrets. The optional
+report settings are documented below. If initial import attempts a build before
+the required secrets are configured, finish the Worker settings and retry the
+build; do not remove the required-secret check. Inspect any custom-domain
+conflict rather than replacing an existing DNS target automatically. Once
+connected, pushes to `main` run the checks and deployment on Cloudflare's
+infrastructure.
+
+## User reports to GitHub
+
+Signed-in members and paired phones can file a problem report from Borealis.
+The companion accepts the report, validates it, and creates the GitHub issue
+itself; browsers and phones never hold a GitHub token.
+
+Report filing is **optional** and off unless both settings are present as
+Worker secrets (or Node environment variables):
+
+- `BOREALIS_GITHUB_REPORT_REPOSITORY`: `owner/repository`, e.g.
+  `gavdevs/borealis`.
+- `BOREALIS_GITHUB_REPORT_TOKEN`: a fine-grained GitHub token limited to that
+  one repository with **Issues: read and write** and nothing else. Never use a
+  classic token or an account password.
+
+Set both or neither. Setting only one fails configuration validation when the
+instance starts or handles a request, so a typo cannot silently disable
+reports. When neither is set, `GET /api/borealis/v1/reports` returns
+`{ "configured": false }` and the web report page says so instead of showing a
+form that cannot send. With the settings in place, `POST /reports` creates the
+issue and returns the issue number and URL.
+
+The token is used only in the server-side `Authorization` header of the GitHub
+REST call. It never reaches a client bundle, a response body, or a log line.
+Delivery failures are reported to the user as a generic retryable error; the
+operator log records only a bounded event name and upstream status. Report text
+is redacted for obvious credentials, cookies, and authorization headers before
+it leaves the service, but reporters are told reports are public, so they must
+remove anything private themselves.
+
+Report filing is limited to five submissions per client per hour using the same
+durable database limiter as sign-in, on top of the Cloudflare edge limiter.
+Raising that limit increases the chance of public issue spam and GitHub API use
+on the operator account.
+
+To rotate the token, create the replacement in GitHub, update
+`BOREALIS_GITHUB_REPORT_TOKEN` in Worker settings, and redeploy. Revoke the old
+token after the new value is live. The repository setting has no secret value
+and can be changed independently; both are read only at request time through
+the Worker configuration.
+
+For a local Node instance, export the same two variables before `pnpm dev`.
+GitHub must be reachable from the server; a local instance without them reports
+that filing is not configured.
 
 ## Validation and database migrations
 

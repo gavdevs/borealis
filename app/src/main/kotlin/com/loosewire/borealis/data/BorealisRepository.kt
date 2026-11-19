@@ -1,16 +1,22 @@
 package com.loosewire.borealis.data
 
+import android.os.SystemClock
 import com.loosewire.borealis.delivery.PlayArtifactDownloader
 import com.loosewire.borealis.install.BorealisInstallCoordinator
 import com.loosewire.borealis.install.InstallPreparationResult
 import com.loosewire.borealis.install.InstallProgress
 import com.loosewire.borealis.install.InstallStage
+import com.loosewire.borealis.install.PendingInstallState
 import com.loosewire.borealis.install.UninstallProgress
 import com.loosewire.borealis.install.UninstallStage
+import com.loosewire.borealis.install.isLive
+import com.loosewire.borealis.install.pendingInstallState
+import com.loosewire.borealis.install.supersededByRetry
 import com.loosewire.borealis.security.SignedJobVerifier
-import com.thelightphone.sdk.install.LightPackageInstallOutcome
+import com.thelightphone.sdk.install.LightPackageInstallResult
 import com.thelightphone.sdk.install.LightPackageUninstallOutcome
 import com.thelightphone.sdk.install.LightPackageInstaller
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -41,7 +47,17 @@ class BorealisRepository(
     private val clearPlayAuthentication: suspend () -> Unit = {},
 ) {
     private val installMutex = Mutex()
-    private var lastReportedInstallOutcome: Pair<Int, LightPackageInstallOutcome>? = null
+
+    /**
+     * When this process committed each Android session. The SDK's pending-user-action
+     * intent is single-shot and cannot be re-sent to a later process, so only these
+     * timestamps can prove a confirmation is still waiting on the user.
+     */
+    private val committedSessions = ConcurrentHashMap<Int, Long>()
+    private var lastReportedInstallOutcome: Pair<Int, PendingInstallState>? = null
+
+    /** Elapsed realtime is monotonic, so a wall-clock change cannot revive a session. */
+    private val elapsedRealtime: () -> Long = SystemClock::elapsedRealtime
 
     val canRequestPackageInstalls: Boolean
         get() = installer.canRequestPackageInstalls
@@ -67,7 +83,7 @@ class BorealisRepository(
     suspend fun beginPairing(
         instanceUrl: String,
         deviceLabel: String = "Light Phone III",
-    ): Result<PendingPairingSession> = repositoryRunCatching {
+    ): Result<PendingPairingSession> = traced(ProblemReportStage.PAIRING) {
         val normalizedUrl = normalizeInstanceUrl(instanceUrl)
         val bearer = generateDeviceBearer()
         BorealisApi(normalizedUrl).use { api ->
@@ -83,7 +99,7 @@ class BorealisRepository(
         }
     }
 
-    suspend fun activatePairing(): Result<BorealisSession> = repositoryRunCatching {
+    suspend fun activatePairing(): Result<BorealisSession> = traced(ProblemReportStage.PAIRING) {
         val pending = store.loadPending() ?: error("No pairing is in progress.")
         val activation = BorealisApi(pending.instanceUrl).use { api ->
             api.activatePairing(pending.pairing).getOrThrow()
@@ -100,7 +116,7 @@ class BorealisRepository(
         }
     }
 
-    suspend fun sync(): Result<BorealisSnapshot> = repositoryRunCatching {
+    suspend fun sync(): Result<BorealisSnapshot> = traced(ProblemReportStage.SYNC) {
         val session = store.loadSession() ?: error("Pair Borealis with the companion first.")
         val sync = BorealisApi(session.instanceUrl).use { api ->
             api.sync(session.deviceBearer).getOrThrow()
@@ -129,9 +145,10 @@ class BorealisRepository(
     suspend fun installLibraryApp(
         packageName: String,
         onProgress: (InstallProgress) -> Unit = {},
-    ): Result<ProcessingResult> = repositoryRunCatching {
+    ): Result<ProcessingResult> = traced(ProblemReportStage.INSTALL) {
         installMutex.withLock {
-            require(store.loadPendingInstall() == null) { "Another install is still in progress." }
+            retirePendingInstallForRetry(packageName)?.let { return@withLock it }
+            require(store.loadPendingInstall() == null) { "Android is still processing the previous install." }
             processLibraryApp(packageName, onProgress)
         }
     }
@@ -144,9 +161,10 @@ class BorealisRepository(
      */
     suspend fun uninstallLibraryApp(
         packageName: String,
-    ): Result<ProcessingResult> = repositoryRunCatching {
+    ): Result<ProcessingResult> = traced(ProblemReportStage.UNINSTALL) {
         installMutex.withLock {
-            require(store.loadPendingInstall() == null) { "An install is still in progress." }
+            retirePendingInstallForRetry(packageName)
+            require(store.loadPendingInstall() == null) { "Android is still processing the previous install." }
             require(store.loadPendingUninstall() == null) { "An uninstall is still in progress." }
             val library = store.loadLibrary()
             require(library.any { it.packageName == packageName }) {
@@ -164,7 +182,13 @@ class BorealisRepository(
 
     suspend fun syncAndUpdate(): Result<ProcessingResult> = repositoryRunCatching {
         installMutex.withLock {
-            reconcilePendingInstallInternal()?.let { return@withLock it }
+            val pendingResult = reconcilePendingInstallInternal()
+            if (store.loadPendingInstall() != null) {
+                // Android still owns this attempt; an unattended pass must not race it.
+                // A user tap can replace it, but the 6-hour job cannot decide for them.
+                return@withLock pendingResult
+                    ?: ProcessingResult("Waiting for Android to finish an install.", false)
+            }
             reconcilePendingUninstallInternal()?.let { return@withLock it }
             val snapshot = sync().getOrThrow()
             val update = snapshot.library.firstOrNull { it.status == LibraryAppStatus.UpdateAvailable }
@@ -187,40 +211,117 @@ class BorealisRepository(
         reconcilePendingInstallInternal()
     }
 
+    /**
+     * Retires a persisted session a tap has to replace. Only a commit Android has not
+     * answered yet blocks the tap: a pending confirmation cannot be re-opened, so the
+     * tap must immediately start a new session instead of waiting for a prompt the user
+     * may have already dismissed. The requested app's own completed install
+     * short-circuits the attempt so it is reported instead of downloaded again.
+     */
+    private suspend fun retirePendingInstallForRetry(packageName: String): ProcessingResult? {
+        val pending = store.loadPendingInstall() ?: return null
+        val result = pendingResultFor(pending)
+        val state = pendingInstallStateFor(pending, result)
+        require(state.supersededByRetry) { "Android is still finishing the previous install." }
+        val retired = retirePendingInstall(pending, state, result)
+        return retired.takeIf { state == PendingInstallState.Installed && pending.packageName == packageName }
+    }
+
+    /**
+     * Resolves a persisted install session against Android's own package state.
+     *
+     * The SDK's result broadcast is not durable evidence. The confirmation intent it
+     * carries is delivered once, a force-stopped app never receives the terminal
+     * status, and results are stored with an asynchronous write. A confirmation is
+     * reported as waiting rather than failed here, because the user can retry; but it is
+     * only "live" while this process committed it, so a session inherited from an
+     * earlier process is retired instead of blocking the library forever.
+     */
     private suspend fun reconcilePendingInstallInternal(): ProcessingResult? {
         val pending = store.loadPendingInstall() ?: return null
-        val session = store.loadSession() ?: return ProcessingResult("The companion pairing is missing.", false)
-        val result = installer.result(pending.sessionId)
-            ?: return ProcessingResult("Installation is still being processed by Android.", false)
-        val (status, message, terminal) = when (result.outcome) {
-            LightPackageInstallOutcome.AwaitingUserAction ->
-                Triple(BorealisJobStatus.AwaitingUserAction, "Confirm the install in Android.", false)
-            LightPackageInstallOutcome.Installed ->
-                Triple(BorealisJobStatus.Succeeded, "${pending.packageName} is installed.", true)
-            LightPackageInstallOutcome.Cancelled ->
-                Triple(BorealisJobStatus.Cancelled, result.message ?: "Installation was cancelled.", true)
-            LightPackageInstallOutcome.Failed ->
-                Triple(BorealisJobStatus.Failed, result.message ?: "Android could not install the app.", true)
-        }
-        if (lastReportedInstallOutcome != (pending.sessionId to result.outcome)) {
-            report(
-                session = session,
-                jobId = pending.jobId,
+        val result = pendingResultFor(pending)
+        val state = pendingInstallStateFor(pending, result)
+        if (!state.isLive) return retirePendingInstall(pending, state, result)
+        if (state == PendingInstallState.AwaitingConfirmation) {
+            reportOnce(
+                pending = pending,
+                state = state,
                 request = JobReportRequest(
-                    status = status.wireValue,
-                    installedVersionCode = if (status == BorealisJobStatus.Succeeded) pending.versionCode else null,
-                    message = result.message,
+                    status = BorealisJobStatus.AwaitingUserAction.wireValue,
+                    message = CONFIRM_IN_ANDROID,
                 ),
             )
-            lastReportedInstallOutcome = pending.sessionId to result.outcome
+            return ProcessingResult(CONFIRM_IN_ANDROID, changed = false)
         }
-        if (terminal) {
-            installer.clearResult(pending.sessionId)
-            downloader.delete(pending.jobId)
-            store.clearPendingInstall()
-            lastReportedInstallOutcome = null
+        return ProcessingResult("Installation is still being processed by Android.", changed = false)
+    }
+
+    /**
+     * Reports and forgets a session a new attempt replaces.
+     *
+     * The local row is always cleared: it is the only barrier to a fresh confirmation,
+     * and a companion that already closed the job (or is unreachable) must never keep
+     * the phone from retrying. A replacement install reuses any still-active job and
+     * reports the real outcome, so a lost report heals on the next attempt.
+     */
+    private suspend fun retirePendingInstall(
+        pending: PendingInstall,
+        state: PendingInstallState,
+        result: LightPackageInstallResult?,
+    ): ProcessingResult {
+        check(state.supersededByRetry) { "A committing install session must not be retired." }
+        val deliveredVersionCode = if (state == PendingInstallState.Installed) {
+            installer.installedPackage(pending.packageName)?.versionCode ?: pending.versionCode
+        } else null
+        val (status, message) = when (state) {
+            PendingInstallState.Installed ->
+                BorealisJobStatus.Succeeded to "${pending.packageName} is installed."
+            PendingInstallState.Cancelled ->
+                BorealisJobStatus.Cancelled to (result?.message ?: "Installation was cancelled.")
+            PendingInstallState.Failed ->
+                BorealisJobStatus.Failed to (result?.message ?: "Android could not install the app.")
+            PendingInstallState.Orphaned ->
+                BorealisJobStatus.Cancelled to INTERRUPTED_INSTALL
+            // The user asked again while Android waited: the earlier confirmation is
+            // abandoned, and the replacement install reports the real outcome.
+            PendingInstallState.AwaitingConfirmation ->
+                BorealisJobStatus.Cancelled to SUPERSEDED_INSTALL
+            PendingInstallState.InProgress ->
+                error("A committing install session cannot be retired.")
         }
-        return ProcessingResult(message, changed = terminal)
+        reportOnce(
+            pending = pending,
+            state = state,
+            request = JobReportRequest(
+                status = status.wireValue,
+                installedVersionCode = deliveredVersionCode,
+                message = message.takeIf { status != BorealisJobStatus.Succeeded },
+            ),
+        )
+        installer.clearResult(pending.sessionId)
+        downloader.delete(pending.jobId)
+        store.clearPendingInstall()
+        committedSessions.remove(pending.sessionId)
+        lastReportedInstallOutcome = null
+        return ProcessingResult(message, changed = true)
+    }
+
+    /** The companion is a status log, not install authority: never block on its failure. */
+    private suspend fun reportOnce(
+        pending: PendingInstall,
+        state: PendingInstallState,
+        request: JobReportRequest,
+    ) {
+        if (lastReportedInstallOutcome == (pending.sessionId to state)) return
+        val session = store.loadSession() ?: return
+        try {
+            report(session = session, jobId = pending.jobId, request = request)
+            lastReportedInstallOutcome = pending.sessionId to state
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            // The pending row is cleared regardless; a later attempt reports the truth.
+        }
     }
 
     /**
@@ -258,9 +359,31 @@ class BorealisRepository(
 
     suspend fun forget() {
         clearPlayAuthentication()
+        committedSessions.clear()
+        lastReportedInstallOutcome = null
         store.clearPendingInstall()
         store.clearPendingUninstall()
         store.forget()
+    }
+
+    /**
+     * Sends a user-authored problem report for the paired device. The body is
+     * normalized again here so no caller can ship credentials, account
+     * identifiers, or unallowlisted diagnostics.
+     */
+    suspend fun submitProblemReport(
+        title: String,
+        description: String,
+        diagnostics: String?,
+    ): Result<ProblemReportResponse> = traced(ProblemReportStage.REPORT) {
+        val session = store.loadSession() ?: error("Pair Borealis with the companion first.")
+        problemReportValidationError(title, description)?.let { throw IllegalArgumentException(it) }
+        val request = problemReportRequest(title, description, diagnostics)
+        BorealisApi(session.instanceUrl).use { api ->
+            val response = api.submitProblemReport(session.deviceBearer, request).getOrThrow()
+            require(response.ok) { "The companion did not accept the report." }
+            response
+        }
     }
 
     private suspend fun processLibraryApp(
@@ -302,6 +425,10 @@ class BorealisRepository(
                 ProcessingResult(result.message, true)
             }
             is InstallPreparationResult.Submitted -> {
+                // Record liveness before persisting: Android's confirmation is started
+                // from the SDK's broadcast receiver, and only this process can observe
+                // the session as still waiting on the user.
+                committedSessions[result.session.id] = elapsedRealtime()
                 store.savePendingInstall(
                     PendingInstall(
                         jobId = job.jobId,
@@ -316,33 +443,65 @@ class BorealisRepository(
         }
     }
 
-    private suspend fun readLibrary(library: List<LibraryApp>, checkUpdates: Boolean): List<LibraryAppState> =
-        library.map { app ->
+    private suspend fun readLibrary(library: List<LibraryApp>, checkUpdates: Boolean): List<LibraryAppState> {
+        var checked = false
+        var unavailable = false
+        val states = library.map { app ->
             val installed = installer.installedPackage(app.packageName)
             val available = if (checkUpdates && installed != null) {
+                checked = true
                 try {
                     latestVersionCode(app.packageName).takeIf { it > 0L }
                 } catch (error: CancellationException) {
                     throw error
                 } catch (_: Exception) {
                     // Do not label an unverified/offline version as current or expose upstream auth details.
+                    unavailable = true
                     null
                 }
             } else null
             LibraryAppState(app, installed?.versionCode, available)
         }
+        // One aggregate event per sync: Play update checks are background work, not a
+        // per-app log, and the report ring buffer must stay meaningful.
+        if (checked) {
+            ProblemReportLog.record(
+                ProblemReportStage.GOOGLE_PLAY,
+                if (unavailable) ProblemReportOutcome.UNAVAILABLE else ProblemReportOutcome.SUCCEEDED,
+            )
+        }
+        return states
+    }
 
     private fun pendingProgress(pending: PendingInstall, library: List<LibraryAppState>): InstallProgress =
         InstallProgress(
             displayName = library.firstOrNull { it.app.packageName == pending.packageName }?.app?.displayName
                 ?: pending.packageName,
-            stage = when (installer.result(pending.sessionId)?.outcome) {
-                LightPackageInstallOutcome.AwaitingUserAction -> InstallStage.AwaitingConfirmation
-                LightPackageInstallOutcome.Installed,
-                LightPackageInstallOutcome.Failed,
-                LightPackageInstallOutcome.Cancelled -> InstallStage.ReportingResult
-                null -> InstallStage.Installing
+            stage = when (pendingInstallStateFor(pending, pendingResultFor(pending))) {
+                PendingInstallState.AwaitingConfirmation -> InstallStage.AwaitingConfirmation
+                PendingInstallState.InProgress -> InstallStage.Installing
+                PendingInstallState.Orphaned -> InstallStage.Interrupted
+                PendingInstallState.Installed,
+                PendingInstallState.Cancelled,
+                PendingInstallState.Failed -> InstallStage.ReportingResult
             },
+        )
+
+    /** The SDK's result store is keyed by session id, which Android may recycle. */
+    private fun pendingResultFor(pending: PendingInstall): LightPackageInstallResult? =
+        installer.result(pending.sessionId)
+            ?.takeIf { it.packageName == null || it.packageName == pending.packageName }
+
+    private fun pendingInstallStateFor(
+        pending: PendingInstall,
+        result: LightPackageInstallResult?,
+    ): PendingInstallState =
+        pendingInstallState(
+            pendingVersionCode = pending.versionCode,
+            result = result,
+            installedVersionCode = installer.installedPackage(pending.packageName)?.versionCode,
+            committedAgoMillis = committedSessions[pending.sessionId]
+                ?.let { committedAt -> elapsedRealtime() - committedAt },
         )
 
     private fun pendingUninstallProgress(pending: PendingUninstall, library: List<LibraryAppState>): UninstallProgress =
@@ -368,6 +527,34 @@ class BorealisRepository(
             require(response.ok) { "The companion did not accept the install status." }
             store.saveRevision(response.revision)
         }
+    }
+}
+
+private const val CONFIRM_IN_ANDROID = "Confirm the install in Android."
+private const val INTERRUPTED_INSTALL =
+    "Android never confirmed this install. Tap install again to start a new confirmation."
+private const val SUPERSEDED_INSTALL = "Restarting the Android confirmation."
+
+/**
+ * Runs a repository operation and records one structured event for reports.
+ * Only the stage, the outcome, and a clamped HTTP status are kept; error text,
+ * package names, URLs, and tokens never reach [ProblemReportLog].
+ */
+private suspend fun <T> traced(
+    stage: ProblemReportStage,
+    block: suspend () -> T,
+): Result<T> {
+    ProblemReportLog.record(stage, ProblemReportOutcome.STARTED)
+    return try {
+        Result.success(block()).also {
+            ProblemReportLog.record(stage, ProblemReportOutcome.SUCCEEDED)
+        }
+    } catch (error: CancellationException) {
+        ProblemReportLog.record(stage, ProblemReportOutcome.CANCELLED)
+        throw error
+    } catch (error: Exception) {
+        ProblemReportLog.record(stage, ProblemReportOutcome.FAILED, (error as? BorealisApiException)?.httpStatus)
+        Result.failure(error)
     }
 }
 

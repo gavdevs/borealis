@@ -1,5 +1,6 @@
 package com.loosewire.borealis.ui
 
+import android.os.Build
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -17,6 +18,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -38,15 +40,24 @@ import com.loosewire.borealis.data.LibraryAppState
 import com.loosewire.borealis.data.LibraryAppStatus
 import com.loosewire.borealis.data.PairingStatus
 import com.loosewire.borealis.data.PendingPairingSession
+import com.loosewire.borealis.data.ProblemReportContext
+import com.loosewire.borealis.data.formatProblemReportDiagnostics
+import com.loosewire.borealis.data.problemReportDescription
+import com.loosewire.borealis.data.problemReportFailureMessage
+import com.loosewire.borealis.data.problemReportTitle
+import com.loosewire.borealis.data.problemReportValidationError
 import com.loosewire.borealis.install.InstallProgress
 import com.loosewire.borealis.install.InstallStage
 import com.loosewire.borealis.install.UninstallProgress
 import com.loosewire.borealis.install.UninstallStage
+import com.loosewire.borealis.install.blocksInstall
 import com.thelightphone.sdk.InitialScreen
 import com.thelightphone.sdk.LightScreen
 import com.thelightphone.sdk.LightViewModel
 import com.thelightphone.sdk.LightWork
 import com.thelightphone.sdk.SealedLightActivity
+import com.thelightphone.sdk.SimpleLightScreen
+import com.thelightphone.sdk.rememberKeyboardOptions
 import com.thelightphone.sdk.ui.LightBarButton
 import com.thelightphone.sdk.ui.LightBottomBar
 import com.thelightphone.sdk.ui.LightFullscreenModal
@@ -54,6 +65,8 @@ import com.thelightphone.sdk.ui.LightIcons
 import com.thelightphone.sdk.ui.LightProgressBar
 import com.thelightphone.sdk.ui.LightScrollView
 import com.thelightphone.sdk.ui.LightText
+import com.thelightphone.sdk.ui.LightTextField
+import com.thelightphone.sdk.ui.LightTextInputEditor
 import com.thelightphone.sdk.ui.LightTextVariant
 import com.thelightphone.sdk.ui.LightTheme
 import com.thelightphone.sdk.ui.LightThemeController
@@ -190,7 +203,10 @@ class BorealisHomeViewModel(
     }
 
     fun install(app: LibraryApp) {
-        if (requestJob?.isActive == true || _uiState.value.installProgress != null) return
+        if (requestJob?.isActive == true) return
+        // Only an active download or commit blocks a tap. A pending Android confirmation
+        // is replaced immediately: Android never re-opens it, so waiting cannot help.
+        if (_uiState.value.installProgress?.blocksInstall == true) return
         _uiState.update {
             it.copy(
                 loading = true,
@@ -281,7 +297,13 @@ class BorealisHomeViewModel(
                 it.copy(
                     session = snapshot.session,
                     library = snapshot.library,
-                    installProgress = snapshot.installProgress,
+                    // A retry clears the stored session before it downloads, so the
+                    // snapshot must not blank progress the request job is reporting.
+                    installProgress = if (requestJob?.isActive == true) {
+                        it.installProgress ?: snapshot.installProgress
+                    } else {
+                        snapshot.installProgress
+                    },
                     uninstallProgress = snapshot.uninstallProgress,
                     installAccessGranted = repository.canRequestPackageInstalls,
                     loading = false,
@@ -332,7 +354,8 @@ class BorealisHomeViewModel(
                         )
                     }
                     if (local.pendingInstall == null && local.pendingUninstall == null) {
-                        syncInternal()
+                        // A retry in flight reports its own result; sync afterwards.
+                        if (requestJob?.isActive != true) syncInternal()
                         return@launch
                     }
                 } catch (error: CancellationException) {
@@ -432,9 +455,14 @@ class BorealisHomeScreen(sealedActivity: SealedLightActivity) :
             text = state.googleAccountStatus.buttonLabel,
             onClick = { navigateTo(::BorealisGoogleScreen) { viewModel.load() } },
         )
+        val reportButton = LightBarButton.Text(
+            text = "REPORT",
+            onClick = { navigateTo(::BorealisReportScreen) },
+        )
         val items = when {
             state.loading -> emptyList()
-            state.installProgress != null || state.uninstallProgress != null -> listOf(
+            state.installProgress?.blocksInstall == true || state.uninstallProgress != null -> listOf(
+                reportButton,
                 LightBarButton.LightIcon(
                     icon = LightIcons.REFRESH,
                     onClick = viewModel::sync,
@@ -454,9 +482,10 @@ class BorealisHomeScreen(sealedActivity: SealedLightActivity) :
             state.session == null -> listOf(
                 LightBarButton.Text(text = "PAIR", onClick = viewModel::beginPairing),
             )
-            !state.installAccessGranted -> listOf(googleAccountButton)
+            !state.installAccessGranted -> listOf(googleAccountButton, reportButton)
             else -> listOf(
                 googleAccountButton,
+                reportButton,
                 LightBarButton.LightIcon(
                     icon = LightIcons.REFRESH,
                     onClick = viewModel::sync,
@@ -586,7 +615,7 @@ private fun ReadyContent(
         )
         state.installProgress?.let { InstallProgressContent(it) }
         state.uninstallProgress?.let { UninstallProgressContent(it) }
-        if (state.loading && state.installProgress == null && state.uninstallProgress == null) {
+        if (state.loading && state.installProgress?.blocksInstall != true && state.uninstallProgress == null) {
             LightText("Syncing library and checking for updates…", LightTextVariant.Detail)
             BusyBar()
         }
@@ -603,7 +632,7 @@ private fun ReadyContent(
             state.library.forEach { app ->
                 LibraryRow(
                     state = app,
-                    enabled = !state.loading && state.installProgress == null &&
+                    enabled = !state.loading && state.installProgress?.blocksInstall != true &&
                         state.uninstallProgress == null && state.installAccessGranted,
                     onClick = { onInstall(app.app) },
                     onUninstall = { onUninstall(app.app) },
@@ -686,7 +715,8 @@ private fun InstallProgressContent(progress: InstallProgress) {
                 InstallStage.Downloading -> "Downloading…"
                 InstallStage.Verifying -> "Verifying download…"
                 InstallStage.Installing -> "Installing with Android…"
-                InstallStage.AwaitingConfirmation -> "Confirm installation in Android."
+                InstallStage.AwaitingConfirmation -> "Confirm the installation in Android."
+                InstallStage.Interrupted -> "Android never confirmed this install. Tap it to start a new confirmation."
                 InstallStage.ReportingResult -> "Saving installation status…"
             },
             variant = LightTextVariant.Detail,
@@ -706,7 +736,11 @@ private fun InstallProgressContent(progress: InstallProgress) {
                 LightText("File ${download.currentFile} of ${download.totalFiles}", LightTextVariant.Fine)
             }
         }
-        if (progress.download == null && progress.stage != InstallStage.AwaitingConfirmation) BusyBar()
+        if (progress.download == null && progress.stage != InstallStage.AwaitingConfirmation &&
+            progress.stage != InstallStage.Interrupted
+        ) {
+            BusyBar()
+        }
     }
 }
 
@@ -800,5 +834,324 @@ private fun UninstallProgressContent(progress: UninstallProgress) {
             variant = LightTextVariant.Detail,
         )
         if (progress.stage == UninstallStage.Starting) BusyBar()
+    }
+}
+
+data class ReportFormState(
+    val title: String = "",
+    val description: String = "",
+    val includeDiagnostics: Boolean = true,
+    val sending: Boolean = false,
+    val sent: Boolean = false,
+    val errorMessage: String? = null,
+    val context: ProblemReportContext? = null,
+    val diagnosticsText: String? = null,
+)
+
+/**
+ * The rendered preview and the submitted `diagnostics` field are the same
+ * snapshot string, so the screen cannot show one thing and send another.
+ */
+internal fun reportDiagnosticsPreview(state: ReportFormState): String? =
+    if (state.includeDiagnostics) state.diagnosticsText else null
+
+class BorealisReportViewModel(
+    private val repository: BorealisRepository,
+    private val isGoogleConnected: suspend () -> Boolean,
+    private val appVersion: String,
+    private val androidSdk: Int,
+    private val deviceModel: String,
+) : LightViewModel<Unit>() {
+    private val _uiState = MutableStateFlow(ReportFormState())
+    val uiState: StateFlow<ReportFormState> = _uiState.asStateFlow()
+    private var contextJob: Job? = null
+
+    /** Read on show; the report describes this phone at the time it is filed. */
+    fun loadContext() {
+        if (contextJob?.isActive == true) return
+        contextJob = viewModelScope.launch(Dispatchers.IO) {
+            val snapshot = try {
+                repository.load()
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                null
+            }
+            val googlePlayConnected = try {
+                isGoogleConnected()
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                null
+            }
+            val reportContext = ProblemReportContext(
+                appVersion = appVersion,
+                androidSdk = androidSdk,
+                deviceModel = deviceModel,
+                paired = snapshot?.session != null,
+                libraryApps = snapshot?.library?.size ?: 0,
+                installedApps = snapshot?.library?.count { app -> app.installedVersionCode != null } ?: 0,
+                googlePlayConnected = googlePlayConnected,
+                installInProgress = snapshot?.pendingInstall != null,
+                uninstallInProgress = snapshot?.pendingUninstall != null,
+            )
+            _uiState.update {
+                it.copy(
+                    context = reportContext,
+                    diagnosticsText = formatProblemReportDiagnostics(reportContext),
+                )
+            }
+        }
+    }
+
+    fun setTitle(value: String) {
+        _uiState.update { it.copy(title = problemReportTitle(value), errorMessage = null) }
+    }
+
+    fun setDescription(value: String) {
+        _uiState.update { it.copy(description = problemReportDescription(value), errorMessage = null) }
+    }
+
+    fun setIncludeDiagnostics(include: Boolean) {
+        _uiState.update { it.copy(includeDiagnostics = include) }
+    }
+
+    fun send() {
+        val state = _uiState.value
+        if (state.sending) return
+        val context = state.context
+        if (context == null) {
+            _uiState.update { it.copy(errorMessage = "Still reading this phone's state. Try again in a moment.") }
+            return
+        }
+        if (!context.paired) {
+            _uiState.update { it.copy(errorMessage = "Pair this phone before reporting so the companion can authenticate it.") }
+            return
+        }
+        val validation = problemReportValidationError(state.title, state.description)
+        if (validation != null) {
+            _uiState.update { it.copy(errorMessage = validation) }
+            return
+        }
+        val diagnostics = reportDiagnosticsPreview(state)
+        _uiState.update { it.copy(sending = true, errorMessage = null) }
+        viewModelScope.launch(Dispatchers.IO) {
+            repository.submitProblemReport(state.title, state.description, diagnostics).fold(
+                onSuccess = {
+                    _uiState.update { it.copy(sending = false, sent = true) }
+                },
+                onFailure = { error ->
+                    _uiState.update {
+                        it.copy(sending = false, errorMessage = problemReportFailureMessage(error))
+                    }
+                },
+            )
+        }
+    }
+}
+
+/**
+ * Discoverable from the home bottom bar. States plainly that filing creates a
+ * public issue, shows the exact diagnostics text, and offers retry on failure.
+ */
+class BorealisReportScreen(sealedActivity: SealedLightActivity) :
+    LightScreen<Unit, BorealisReportViewModel>(sealedActivity) {
+    private val services = BorealisServices.from(lightContext)
+
+    override val viewModelClass = BorealisReportViewModel::class.java
+
+    override fun createViewModel() = BorealisReportViewModel(
+        repository = services.repository,
+        isGoogleConnected = services::isGoogleConnected,
+        appVersion = BuildConfig.VERSION_NAME,
+        androidSdk = Build.VERSION.SDK_INT,
+        deviceModel = Build.MODEL.orEmpty(),
+    )
+
+    override fun willShow() {
+        viewModel.loadContext()
+    }
+
+    @Composable
+    override fun Content() {
+        val colors by LightThemeController.colors.collectAsState()
+        val state by viewModel.uiState.collectAsState()
+        LightTheme(colors = colors) {
+            Column(Modifier.fillMaxSize().background(LightThemeTokens.colors.background)) {
+                LightTopBar(center = LightTopBarCenter.Text("Report a problem"))
+                Box(Modifier.weight(1f).fillMaxWidth()) {
+                    if (state.sent) {
+                        ReportSentContent()
+                    } else {
+                        ReportFormContent(
+                            state = state,
+                            diagnostics = reportDiagnosticsPreview(state),
+                            onEditTitle = { openEditor("Title", state.title, singleLine = true, viewModel::setTitle) },
+                            onEditDescription = {
+                                openEditor("Details", state.description, singleLine = false, viewModel::setDescription)
+                            },
+                            onToggleDiagnostics = viewModel::setIncludeDiagnostics,
+                            onRetry = viewModel::send,
+                        )
+                    }
+                }
+                LightBottomBar(
+                    items = when {
+                        state.sent -> listOf(LightBarButton.Text("DONE", onClick = { goBack(Unit) }))
+                        state.sending -> emptyList()
+                        else -> listOf(
+                            LightBarButton.Text("BACK", onClick = { goBack(Unit) }),
+                            LightBarButton.Text("SEND", enabled = state.context != null, onClick = viewModel::send),
+                        )
+                    },
+                )
+            }
+        }
+    }
+
+    private fun openEditor(
+        label: String,
+        current: String,
+        singleLine: Boolean,
+        onResult: (String) -> Unit,
+    ) {
+        navigateTo(
+            screenFactory = { activity -> ReportTextEditorScreen(activity, label, current, singleLine) },
+            resultCallback = { value -> if (value != null) onResult(value) },
+        )
+    }
+}
+
+@Composable
+private fun ReportFormContent(
+    state: ReportFormState,
+    diagnostics: String?,
+    onEditTitle: () -> Unit,
+    onEditDescription: () -> Unit,
+    onToggleDiagnostics: (Boolean) -> Unit,
+    onRetry: () -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxSize().padding(horizontal = 1f.gridUnitsAsDp())) {
+        LightScrollView(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            LightText(
+                text = "REPORT A PROBLEM",
+                variant = LightTextVariant.Heading,
+                modifier = Modifier.padding(top = 0.75f.gridUnitsAsDp()),
+            )
+            LightText(
+                text = "Sending creates a public issue on the Borealis GitHub repository. Leave out passwords, account details, and anything private.",
+                variant = LightTextVariant.Copy,
+                modifier = Modifier.padding(top = 0.5f.gridUnitsAsDp()),
+            )
+            LightTextField(
+                label = "Title:",
+                value = state.title,
+                placeholder = "What went wrong?",
+                onClick = onEditTitle,
+                modifier = Modifier.padding(top = 1f.gridUnitsAsDp()),
+            )
+            LightTextField(
+                label = "Details:",
+                value = state.description,
+                placeholder = "What did you see?",
+                onClick = onEditDescription,
+                modifier = Modifier.padding(top = 1f.gridUnitsAsDp()),
+            )
+            LightText(
+                text = if (state.includeDiagnostics) "DIAGNOSTICS: INCLUDED" else "DIAGNOSTICS: NOT INCLUDED",
+                variant = LightTextVariant.Button,
+                modifier = Modifier
+                    .padding(top = 1.25f.gridUnitsAsDp())
+                    .lightClickable(
+                        onClickLabel = if (state.includeDiagnostics) {
+                            "Exclude diagnostics"
+                        } else {
+                            "Include diagnostics"
+                        },
+                        onClick = { onToggleDiagnostics(!state.includeDiagnostics) },
+                    ),
+            )
+            LightText(
+                text = "Version, device, pairing state, and recent app stages. Never your credential, email, or logcat.",
+                variant = LightTextVariant.Detail,
+                modifier = Modifier.padding(top = 0.25f.gridUnitsAsDp()),
+            )
+            if (diagnostics != null) {
+                LightText(
+                    text = diagnostics,
+                    variant = LightTextVariant.Fine,
+                    monospace = true,
+                    modifier = Modifier.padding(top = 0.5f.gridUnitsAsDp()),
+                )
+            }
+            state.errorMessage?.let { message ->
+                LightText(
+                    text = message,
+                    variant = LightTextVariant.Copy,
+                    modifier = Modifier.padding(top = 1f.gridUnitsAsDp()),
+                )
+                LightText(
+                    text = "RETRY",
+                    variant = LightTextVariant.Button,
+                    modifier = Modifier
+                        .padding(top = 0.5f.gridUnitsAsDp())
+                        .lightClickable(onClickLabel = "Retry sending the report", onClick = onRetry),
+                )
+            }
+            if (state.sending) {
+                LightText(
+                    text = "Sending report…",
+                    variant = LightTextVariant.Detail,
+                    modifier = Modifier.padding(top = 1f.gridUnitsAsDp()),
+                )
+                BusyBar()
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReportSentContent() {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(horizontal = 1f.gridUnitsAsDp()),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        LightText(
+            text = "REPORT SENT",
+            variant = LightTextVariant.Heading,
+            modifier = Modifier.padding(top = 1f.gridUnitsAsDp()),
+        )
+        LightText(
+            text = "Thank you. The issue is public on the Borealis GitHub repository.",
+            variant = LightTextVariant.Copy,
+            align = TextAlign.Center,
+            modifier = Modifier.padding(top = 0.5f.gridUnitsAsDp()),
+        )
+    }
+}
+
+/** Null result means the user backed out, so the previous value stays. */
+private class ReportTextEditorScreen(
+    sealedActivity: SealedLightActivity,
+    private val label: String,
+    private val initialValue: String,
+    private val singleLine: Boolean,
+) : SimpleLightScreen<String?>(sealedActivity) {
+    @Composable
+    override fun Content() {
+        val colors by LightThemeController.colors.collectAsState()
+        val textState = rememberTextFieldState(initialValue)
+        val keyboardOptions = rememberKeyboardOptions()
+        LightTheme(colors = colors) {
+            LightTextInputEditor(
+                title = label,
+                state = textState,
+                keyboardOptionsFlow = keyboardOptions,
+                singleLine = singleLine,
+                onSubmit = { value -> goBack(value.toString()) },
+                onBack = { goBack(null) },
+                modifier = Modifier.background(LightThemeTokens.colors.background),
+            )
+        }
     }
 }

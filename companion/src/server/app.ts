@@ -4,13 +4,15 @@ import { createMiddleware } from 'hono/factory'
 import { bodyLimit } from 'hono/body-limit'
 import { secureHeaders } from 'hono/secure-headers'
 import { z, ZodError } from 'zod'
-import type {
-  InstallJobPayload,
-  JobSummary,
-  PairingSummary,
-  SignedJobEnvelope,
+import {
+  REPORT_LIMITS,
+  type InstallJobPayload,
+  type JobSummary,
+  type PairingSummary,
+  type SignedJobEnvelope,
 } from '../shared/api.js'
 import { registerAccountAuth } from './account-auth.js'
+import { createGitHubIssueReporter, ReportDeliveryError, type ReportIssueGateway } from './reports.js'
 import type { BorealisConfig } from './config.js'
 import type { BorealisVariables } from './context.js'
 import {
@@ -48,6 +50,13 @@ const reportBodySchema = z.object({
   message: z.string().trim().max(1_000).nullable().optional(),
 }).strict()
 
+const issueReportBodySchema = z.object({
+  title: z.string().trim().min(3).max(REPORT_LIMITS.title),
+  description: z.string().trim().min(10).max(REPORT_LIMITS.description),
+  diagnostics: z.string().trim().max(REPORT_LIMITS.diagnostics).optional(),
+  source: z.enum(['phone', 'web']),
+}).strict()
+
 export type AppOptions = {
   config: BorealisConfig
   database: BorealisDatabase
@@ -56,6 +65,7 @@ export type AppOptions = {
   clientAddress?: (c: Context) => string
   passwordRuntime?: PasswordRuntime
   signingKey?: PersistedSigningKey
+  reportIssues?: ReportIssueGateway | null
 }
 
 export async function createBorealisApp(options: AppOptions): Promise<Hono<{ Variables: BorealisVariables }>> {
@@ -75,8 +85,13 @@ export async function createBorealisApp(options: AppOptions): Promise<Hono<{ Var
   const {
     accountAuth,
     browserMutationGuard,
+    browserMutationRejection,
+    resolveAccount,
     limit,
   } = registerAccountAuth(app, options)
+  const reportIssues = options.reportIssues !== undefined
+    ? options.reportIssues
+    : createGitHubIssueReporter({ token: config.reportToken, repository: config.reportRepository })
 
   const deviceAuth = createMiddleware<{ Variables: BorealisVariables }>(async (c, next) => {
     const bearer = bearerToken(c.req.header('Authorization'))
@@ -100,6 +115,67 @@ export async function createBorealisApp(options: AppOptions): Promise<Hono<{ Var
     version: '0.1.0',
     now: clock().toISOString(),
   }))
+
+  // One shared reporting contract: a paired phone sends its device bearer, a
+  // signed-in browser sends its session cookie plus the mutation guard. The
+  // claimed source must match the authenticated channel.
+  async function reportingChannel(c: Context<{ Variables: BorealisVariables }>): Promise<{ source: 'phone' | 'web' } | { response: Response }> {
+    const bearer = bearerToken(c.req.header('Authorization'))
+    if (bearer !== null) {
+      if (!DEVICE_BEARER_PATTERN.test(bearer)) {
+        return { response: c.json({ error: 'A valid device credential is required.' }, 401) }
+      }
+      const device = await database.authenticateDevice(sha256Hex(bearer))
+      if (!device) return { response: c.json({ error: 'This device is not active.' }, 401) }
+      c.set('device', device)
+      return { source: 'phone' }
+    }
+    const rejection = browserMutationRejection(c)
+    if (rejection) return { response: rejection }
+    const resolved = await resolveAccount(c)
+    if (!resolved) return { response: c.json({ error: 'Sign in to your Borealis account.' }, 401) }
+    c.set('account', resolved.account)
+    c.set('sessionDigest', resolved.sessionDigest)
+    return { source: 'web' }
+  }
+
+  app.get(`${API}/reports`, async (c) => {
+    if (!await resolveAccount(c)) return c.json({ error: 'Sign in to your Borealis account.' }, 401)
+    return c.json({ configured: reportIssues !== null })
+  })
+
+  app.post(`${API}/reports`, async (c) => {
+    const channel = await reportingChannel(c)
+    if ('response' in channel) return channel.response
+    const parsed = await parseJson(c, issueReportBodySchema)
+    if (!parsed.ok) return parsed.response
+    if (parsed.data.source !== channel.source) {
+      return c.json({ error: 'The report source does not match this connection.' }, 400)
+    }
+    if (!reportIssues) {
+      return c.json({ error: 'Report filing is not configured on this companion.' }, 503)
+    }
+    // A report creates a public GitHub issue on the operator's account, so the
+    // per-client limit is durable and only counts submissions that got this far.
+    if (!await limit(c, 'issue-report', 5, 3_600)) return rateLimited(c, 3_600)
+    try {
+      const issue = await reportIssues.create({
+        title: parsed.data.title,
+        description: parsed.data.description,
+        ...(parsed.data.diagnostics ? { diagnostics: parsed.data.diagnostics } : {}),
+        source: parsed.data.source,
+      })
+      return c.json({ ok: true, number: issue.number, url: issue.url }, 201)
+    } catch (error) {
+      // Never echo upstream detail or the secret; operators get a bounded event
+      // name only, matching the rest of the service's logging.
+      if (error instanceof ReportDeliveryError) {
+        console.error(JSON.stringify({ event: 'report_delivery_failed', reason: error.message }))
+        return c.json({ error: 'Your report could not be filed with GitHub. Please try again later.' }, 502)
+      }
+      throw error
+    }
+  })
 
   app.get(`${API}/catalog/search`, async (c) => {
     const parsed = z.object({

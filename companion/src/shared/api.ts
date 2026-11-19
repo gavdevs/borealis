@@ -87,3 +87,31 @@ export type InstallJobPayload = {
   expiresAt: string
   nonce: string
 }
+
+export type ReportSource = 'phone' | 'web'
+
+// Shared reporting contract. A paired phone bearer and an authenticated
+// browser session submit the identical payload.
+export type ReportSubmission = {
+  title: string
+  description: string
+  diagnostics?: string
+  source: ReportSource
+}
+
+// Enforced identically by the browser form and the server validators.
+export const REPORT_LIMITS = {
+  title: 120,
+  description: 4_000,
+  diagnostics: 8_000,
+} as const
+
+export type ReportReceipt = {
+  ok: true
+  number: number
+  url: string
+}
+
+export type ReportState = {
+  configured: boolean
+}

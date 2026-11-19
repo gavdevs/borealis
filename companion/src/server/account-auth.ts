@@ -10,6 +10,7 @@ import { sha256Hex } from './crypto.js'
 import { PasswordBusyError, type PasswordRuntime } from './passwords.js'
 import { AUTH_BASE_PATH, createAccountAuth, internalAuthEmail } from './better-auth.js'
 import { PASSWORD_MAX_CODE_UNITS, passwordValidationError } from '../shared/password-policy.js'
+import type { AccountSummary } from '../shared/api.js'
 
 const API = '/api/borealis/v1'
 const usernameSchema = z.string().trim().toLowerCase().regex(/^[a-z0-9_]{3,32}$/, 'Use 3–32 letters, numbers, or underscores for your username.')
@@ -101,8 +102,8 @@ export function registerAccountAuth(app: Hono<{ Variables: BorealisVariables }>,
     if (!allowed) c.header('Retry-After', String(seconds))
     return allowed
   }
-  const browserMutationGuard = createMiddleware<{ Variables: BorealisVariables }>(async (c, next) => {
-    if (['GET', 'HEAD', 'OPTIONS'].includes(c.req.method)) return next()
+  function browserMutationRejection(c: AuthContext): Response | null {
+    if (['GET', 'HEAD', 'OPTIONS'].includes(c.req.method)) return null
     const origin = c.req.header('Origin')
     if (c.req.header('X-Borealis-Request') !== '1'
       || c.req.header('Sec-Fetch-Site') === 'cross-site'
@@ -113,17 +114,27 @@ export function registerAccountAuth(app: Hono<{ Variables: BorealisVariables }>,
       && c.req.header('Content-Type')?.split(';')[0]?.trim().toLowerCase() !== 'application/json') {
       return c.json({ error: 'A JSON request body is required.' }, 415)
     }
+    return null
+  }
+  const browserMutationGuard = createMiddleware<{ Variables: BorealisVariables }>(async (c, next) => {
+    const rejection = browserMutationRejection(c)
+    if (rejection) return rejection
     await next()
   })
-  const accountAuth = createMiddleware<{ Variables: BorealisVariables }>(async (c, next) => {
+  async function resolveAccount(c: AuthContext): Promise<{ account: AccountSummary; sessionDigest: string } | null> {
     const session = await readSession(c)
     const account = session ? await database.getAccount(session.user.id) : null
     if (!session || !account) {
       clearSession(c)
-      return c.json({ error: 'Sign in to your Borealis account.' }, 401)
+      return null
     }
-    c.set('account', account)
-    c.set('sessionDigest', sha256Hex(session.session.token))
+    return { account, sessionDigest: sha256Hex(session.session.token) }
+  }
+  const accountAuth = createMiddleware<{ Variables: BorealisVariables }>(async (c, next) => {
+    const resolved = await resolveAccount(c)
+    if (!resolved) return c.json({ error: 'Sign in to your Borealis account.' }, 401)
+    c.set('account', resolved.account)
+    c.set('sessionDigest', resolved.sessionDigest)
     await next()
   })
 
@@ -220,5 +231,5 @@ export function registerAccountAuth(app: Hono<{ Variables: BorealisVariables }>,
     copyCookies(c, response)
     return c.json({ account: c.get('account') })
   })
-  return { accountAuth, browserMutationGuard, limit }
+  return { accountAuth, browserMutationGuard, browserMutationRejection, resolveAccount, limit }
 }

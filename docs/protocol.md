@@ -52,3 +52,15 @@ integrity, APK identity, and signing continuity with any installed package.
 The legacy `review_required` status may remain in history, but new phones do not
 emit it and the server no longer rejects successful unpinned jobs. Byte-level
 download progress is local phone UI state, not high-frequency database traffic.
+
+## Problem reports
+
+`POST /reports` is the shared reporting contract. A phone sends its device
+bearer and `source: "phone"`; the web companion sends its session cookie,
+`X-Borealis-Request: 1`, and `source: "web"`. The body is
+`{ "title": string, "description": string, "diagnostics"?: string, "source":
+"phone" | "web" }`, bounded to 120/4000/8000 characters respectively. The
+server files the report as a GitHub issue using its own secret and answers
+`{ "ok": true, "number": <issue>, "url": <issue url> }`, or with a clear error
+when filing is not configured or the tracker rejects it. A phone must never
+send account identifiers, raw logs, or credentials in a report.
